@@ -1,0 +1,7 @@
+*~
+*.swp
+*.pyc
+*.kdev4*
+data/*
+settings_private.py
+pagerank-test*
