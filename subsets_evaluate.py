@@ -125,6 +125,7 @@ class HindexBeforeSubsetsEvaluation(HindexCumulativeSubsetsEvaluation):
 
 class SqrtNcAfterSubsetsEvaluation(SubsetsEvaluation):
     default_runs = [
+        (0, 60),
         (0, 99),
         (0, 10000),
         ]
