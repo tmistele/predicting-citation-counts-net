@@ -185,6 +185,75 @@ class PredictivityOverTime(Task):
             yield params
 
 
+class PredictivityOverTimeNoHindex0(PredictivityOverTime):
+
+    def get_nonzero_author_ids(self):
+        filename = os.path.join(self.net.data_dir, 'author_ids-%s.npy' %
+                                self.orig_suffix)
+        try:
+            nonzero_author_ids = np.load(filename)
+        except FileNotFoundError as e:
+            from db import db
+            sql = """
+                SELECT a.author_id
+                FROM analysis{0}_authors AS a
+
+                INNER JOIN analysis{0}_hindex_data AS h
+                ON h.author_id = a.author_id
+
+                WHERE
+                h.predict_after_years = 1 AND
+                h.hindex_cumulative = 0
+                """.format(self.net.suffix_cuts)
+            c = db().cursor()
+            numauthors = c.execute(sql)
+            nonzero_author_ids = np.fromiter(
+                c, count=numauthors, dtype=[('author_id', 'i4')])['author_id']
+
+            np.save(filename, nonzero_author_ids)
+
+        return nonzero_author_ids
+
+    def __enter__(self):
+        ret = super().__enter__()
+
+
+        # Change suffix
+        self.__orig_suffix_no_hindex0 = self.orig_suffix
+        self.orig_suffix += '-nohindex0'
+        self.net.suffix = self.orig_suffix
+
+        # Change get_train_authors method
+        self.orig_get_train_authors = self.net.__class__.get_train_authors
+        def fake_get_train_authors(net, *args, **kwargs):
+            authors = self.orig_get_train_authors(net, *args, **kwargs)
+
+            print('authors train incl 0 hindex',
+                  len(np.where(authors['train'] == 1)[0]))
+
+            nonzero_author_ids = self.get_nonzero_author_ids()
+            indices = np.where(np.isin(authors['author_id'], nonzero_author_ids))
+            authors['train'][indices] = 0
+
+            print('authors train excl 0 hindex',
+                  len(np.where(authors['train'] == 1)[0]))
+
+            return authors
+
+        self.net.__class__.get_train_authors = fake_get_train_authors
+
+        return ret
+
+    def __exit__(self, *args, **kwargs):
+        super().__exit__(*args, **kwargs)
+
+        # Reset suffix
+        self.net.suffix = self.__orig_suffix_no_hindex0
+
+        # Restore get_train_authors method
+        self.net.__class__.get_train_authors = self.orig_get_train_authors
+
+
 class DataImportance(Task):
 
     allow_includes = False

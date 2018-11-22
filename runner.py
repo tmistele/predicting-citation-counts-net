@@ -5,7 +5,7 @@ from net import Net, TimeSeriesNet
 from random_forests import RandomForestTimeSeries
 from tasks import DataImportance, DataImportanceOverTime, \
     PredictivityOverTime, DataImportanceInclude, \
-    DataImportanceOverTimeInclude
+    DataImportanceOverTimeInclude, PredictivityOverTimeNoHindex0
 from cross_validation import CrossValidation
 from subsets_evaluate import SqrtNcAfterSubsetsEvaluation
 
@@ -65,6 +65,9 @@ class Runner:
                                            epochs_steps=0) as task:
             yield task
 
+        with PredictivityOverTimeNoHindex0(net, epochs_steps=0) as task:
+            yield task
+
     def sqrt_nc_tasks(self, net):
         subsets_evaluations = [
             (SqrtNcAfterSubsetsEvaluation, None)
@@ -111,7 +114,17 @@ class Runner:
                 for years in task.get_years_range():
                     net.predict_after_years = years
                     net.load_data_y()
-    
+
+        # Make sure author id files from NoHindex0 tasks are generated
+        # May be nicer to put a general prepare() method in Task class
+        for target, tasks in self.targets.items():
+            net = self.create_net(target)
+            with CrossValidation(net) as cv:
+                for _ in cv(num=self.num_cv, load=True, load_to_db=True):
+                    for task in tasks(net):
+                        if isinstance(task, PredictivityOverTimeNoHindex0):
+                            task.get_nonzero_author_ids()
+
     def train_net(self, i=None):
         # Train everything. No database here
         
