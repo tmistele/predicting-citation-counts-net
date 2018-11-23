@@ -318,7 +318,7 @@ class Runner:
                 rf.plot_correlation()
 
     def __summarize_cv_fluctuations(self, net, results, id):
-        columns = ['i', 'years', 'loss', 'r', 'R^2', 'MAPE']
+        columns = ['i', 'years', 'loss', 'r', 'R^2', 'MAPE', 'MAPEmin5']
         values = {0: [], 5: [], 10: []}
 
         for i, result in enumerate(results[id]):

@@ -163,7 +163,7 @@ class PredictivityOverTime(Task):
 
     def save_results_nice(self):
         # Write results
-        columns = ['years', 'loss', 'r', 'R^2', 'MAPE']
+        columns = ['years', 'loss', 'r', 'R^2', 'MAPE', 'MAPEmin5']
         for additional_epochs, data in self.results.items():
 
             suffix = self.orig_suffix
@@ -183,6 +183,22 @@ class PredictivityOverTime(Task):
             self.net.suffix = self.get_suffix(*params)
 
             yield params
+
+    def __enter__(self):
+        ret = super().__enter__()
+
+        # We want to get MAPE >= 5 here
+        self.orig_metric_mapemin5 = self.net.metric_mapemin5
+        self.net.metric_mapemin5 = True
+
+        return ret
+
+    def __exit__(self, *args, **kwargs):
+
+        # Reset MAPE >= 5
+        self.net.metric_mapemin5 = self.orig_metric_mapemin5
+
+        super().__exit__(*args, **kwargs)
 
 
 class PredictivityOverTimeNoHindex0(PredictivityOverTime):
@@ -320,7 +336,7 @@ class DataImportance(Task):
             self.net.suffix = self.__orig_suffix_no_include
 
     def save_results_nice(self):
-        columns = ['exclude', 'years', 'loss', 'r', 'R^2', 'MAPE']
+        columns = ['exclude', 'years', 'loss', 'r', 'R^2', 'MAPE', 'MAPEmin5']
         for additional_epochs, data in self.results.items():
 
             suffix = self.orig_suffix
@@ -375,7 +391,7 @@ class DataImportanceOverTime(DataImportance):
         if not len(self.results):
             return
 
-        base_columns = ['loss', 'r', 'R^2', 'MAPE']
+        base_columns = ['loss', 'r', 'R^2', 'MAPE', 'MAPEmin5']
         if self.includes is not None:
             columns = ["%s_%s" % (col, include[0])
                        for include in self.includes for col in base_columns]

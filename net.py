@@ -35,6 +35,8 @@ class Net(Analysis):
 
     ignore_max_hindex_before = True
 
+    metric_mapemin5 = False
+
     def __init__(self, cutoff, target, first_paper_range=None):
 
         super().__init__(cutoff, first_paper_range)
@@ -1040,7 +1042,15 @@ class Net(Analysis):
             y_true=K.variable(value=ytrue[nonzero]),
             y_pred=K.variable(value=ypred[nonzero])))
 
-        return loss, r, r2, mape
+        if self.metric_mapemin5:
+            min5 = ytrue >= 5
+            mapemin5 = K.eval(mean_absolute_percentage_error(
+                y_true=K.variable(value=ytrue[min5]),
+                y_pred=K.variable(value=ypred[min5])))
+        else:
+            mapemin5 = -1
+
+        return loss, r, r2, mape, mapemin5
 
     def linear_in_time_predictor(self, prediction_sql=None):
 
@@ -1094,15 +1104,16 @@ class Net(Analysis):
             ytrue = self.target_func(data['ytrue'])
             ypred = data['ypred']
 
-            loss, r, r2, mape = self.do_metrics(ytrue=ytrue, ypred=ypred)
+            loss, r, r2, mape, mapemin5 = self.do_metrics(ytrue=ytrue, ypred=ypred)
 
             print("Years", years)
             print("loss =", loss)
             print("r =", r)
             print("R^2 =", r2)
             print("MAPE =", mape)
+            print("MAPEmin5 =", mapemin5)
 
-            result[years] = [years, loss, r, r2, mape]
+            result[years] = [years, loss, r, r2, mape, mapemin5]
 
         return result
 
@@ -1162,15 +1173,16 @@ class Net(Analysis):
         return self.do_metrics(ytrue=y, ypred=y_hindex)
 
     def do_evaluate(self, y, y_net):
-        loss, r, r2, mape = self.do_metrics(ytrue=y, ypred=y_net)
+        loss, r, r2, mape, mapemin5 = self.do_metrics(ytrue=y, ypred=y_net)
 
         print(self.target)
         print("-> Loss", loss)
         print("-> R^2_net", r2)
         print("-> r_net", r)
         print("-> MAPE_net", mape)
+        print("-> MAPEmin5_net", mapemin5)
 
-        return loss, r, r2, mape
+        return loss, r, r2, mape, mapemin5
 
     def evaluate(self):
 
@@ -1502,7 +1514,7 @@ class TimeSeriesNet(Net):
             print("Years", years)
             
             self.predict_after_years = years
-            loss, r, r2, mape = super().hindex_evaluate(
+            loss, r, r2, mape, mapemin5 = super().hindex_evaluate(
                 y[:, years-1],
                 hindex_predictor=hindex_predictor[years])
             self.predict_after_years = orig_predict_after_years
@@ -1510,8 +1522,9 @@ class TimeSeriesNet(Net):
             print("-> r_hindex", r)
             print("-> R^2 hindex", r2)
             print("-> MAPE hindex", mape)
+            print("-> MAPEmin5 hindex", mapemin5)
             
-            result[years] = [years, loss, r, r2, mape]
+            result[years] = [years, loss, r, r2, mape, mapemin5]
     
         return result
 
@@ -1533,15 +1546,17 @@ class TimeSeriesNet(Net):
             ytrue = y[:, index]
             ypred = y_net[:, index]
 
-            loss, r, r2, mape = self.do_metrics(ytrue=ytrue, ypred=ypred)
+            loss, r, r2, mape, mapemin5 = \
+                self.do_metrics(ytrue=ytrue, ypred=ypred)
 
             print("Years ", years)
             print("-> Loss", loss)
             print("-> R^2_net", r2)
             print("-> r_net", r)
             print("-> MAPE_net", mape)
+            print("-> MAPEmin5_net", mapemin5)
 
-            result[years] = [years, loss, r, r2, mape]
+            result[years] = [years, loss, r, r2, mape, mapemin5]
 
         return result
 
