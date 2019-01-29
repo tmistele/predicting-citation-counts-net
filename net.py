@@ -99,15 +99,19 @@ class Net(Analysis):
             last_field = field
             last_pos = pos
         final_pos = numfeatures - 1
-        for i in range(0, final_pos - last_pos):
-            self.__add_column(columns, last_field, i+1, exclude)
+        if last_pos is not None:
+            for i in range(0, final_pos - last_pos):
+                self.__add_column(columns, last_field, i+1, exclude)
 
         return columns
 
     def get_column_names_x(self, exclude=False):
 
         numfeatures = len(self.data_positions)
-        numfeatures += (self.numcategories-1) + (self.paper_topics_dim-1)
+        if 'categories' in self.data_positions:
+            numfeatures += (self.numcategories-1)
+        if 'paper_topics' in self.data_positions:
+            numfeatures += (self.paper_topics_dim-1)
 
         return self.__get_columns(numfeatures, self.data_positions, exclude)
 
@@ -492,7 +496,6 @@ class Net(Analysis):
             # Put num_citations in x
             index = self.data_positions['num_citations']
             x[i, :len(paper_data), index] = paper_data['num_citations']
-            index += 1
 
             # Put months since first_paper_date in x
             index = self.data_positions['months']
@@ -725,10 +728,11 @@ class Net(Analysis):
         y = self.load_data_y(indices=indices)
 
         # Scale data
-        self.__scale_inputs(x, xaux, is_train_inputs=True)
+        self._scale_inputs(x, xaux, is_train_inputs=True)
 
-        # Reshape x to (nauthos, npaper, nfeature)
-        x = x.values.reshape((len(indices[0]), -1, x.values.shape[1]))
+        # Reshape x to (nauthors, npaper, nfeature)
+        if isinstance(x, pd.DataFrame):
+            x = x.values.reshape((len(indices[0]), -1, x.values.shape[1]))
 
         return x, xaux.values, y.values
 
@@ -756,10 +760,11 @@ class Net(Analysis):
                                    total_authors=len(authors))
 
         # Scale data
-        self.__scale_inputs(x, xaux, is_train_inputs=False)
+        self._scale_inputs(x, xaux, is_train_inputs=False)
 
         # Reshape x to (nauthos, npaper, nfeature)
-        x = x.values.reshape((len(indices[0]), -1, x.values.shape[1]))
+        if isinstance(x, pd.DataFrame):
+            x = x.values.reshape((len(indices[0]), -1, x.values.shape[1]))
 
         return x, xaux.values, y.values
 
@@ -768,7 +773,7 @@ class Net(Analysis):
         inputs = {'perpaper_inputs': x, 'perauthor_inputs': xaux}
         return inputs, y
 
-    def __scale_inputs(self, x, xaux, is_train_inputs):
+    def _scale_inputs(self, x, xaux, is_train_inputs):
 
         from sklearn.preprocessing import StandardScaler
         from sklearn.externals import joblib
