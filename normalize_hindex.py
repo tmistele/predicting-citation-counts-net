@@ -21,6 +21,11 @@ def prob_gammapoisson(alpha, beta, h0):
 
 
 def prob_lognormal(mu, sigma, h0):
+    # NOTE: We add .001 to h0, since keras/tf cannot handle our prob_lognormal
+    # for h0 -> 0 very well. If we don't do this, we tend to always get
+    # loss=nan
+    h0 += .001
+
     erfc = K.tensorflow_backend.tf.math.erfc
     def lognormal_cum(x):
         # https://en.wikipedia.org/wiki/Log-normal_distribution#Cumulative_distribution_function
@@ -31,6 +36,9 @@ def prob_lognormal(mu, sigma, h0):
 
 
 def prob_gamma(alpha, beta, h0):
+    # NOTE: We add .001 to h0, since keras/tf cannot handle our prob_gamma for
+    # h0 -> 0 very well. If we don't do this, we tend to always get loss=nan
+    h0 += .001
 
     # https://www.tensorflow.org/api_docs/python/tf/math/igamma
     # igamma(a, x) = 1/Gamma(a) * int_0^x (t^(a-1) exp(-t))
@@ -393,7 +401,6 @@ class NormalizedHindexNet(Net):
         filename = os.path.join(self.data_dir, 'scaler')
         try:
             scaler = joblib.load(filename)
-            print(scaler)
         except FileNotFoundError:
             if is_train_inputs:
                 scaler = StandardScaler(copy=False, with_mean=False)
@@ -433,6 +440,14 @@ class NormalizedHindexNet(Net):
         print("Loading net training data...")
         x, xaux, y = self.load_train_data()
 
+        # How many parameters does our probability distribution have?
+        num_prob_params = len(signature(self.prob).parameters)-1
+
+        # Zero-padding for y
+        # ytmp = np.zeros((y.shape[0], num_prob_params))
+        # ytmp[:, 0] = y.flatten()
+        # y = ytmp
+
         # Prepare generator
         from math import ceil
         nauthors = y.shape[0]
@@ -460,23 +475,48 @@ class NormalizedHindexNet(Net):
                     start += author_batch_size
                     end += author_batch_size
 
-        # How many parameters does our probability distribution have?
-        num_prob_params = len(signature(self.prob).parameters)-1
 
         # Custom loss function
-        def loss(y_true, y_pred):
+        def loss(y_true, y_pred, debug=False):
             # y_true contains the h-index at index 0 and is then (possibly)
             # padded with zeros
             h0 = y_true[:, 0]
+            if debug:
+                h0 = K.print_tensor(h0, message='h0 = ')
 
             # y_pred contains the parameters of the probability distribution
-            params = [y_pred[:, i] for i in range(0, num_prob_params)]
+            if debug:
+                y_pred = K.print_tensor(y_pred, message='y_pred = ')
+
+            # Both need to be positive
+            if num_prob_params != 2:
+                raise Exception("Not implemented")
+            alpha = K.exp(y_pred[:, 0])
+            beta = K.exp(y_pred[:, 1])
+            if debug:
+                alpha = K.print_tensor(alpha, 'alpha = ')
+                beta = K.print_tensor(beta, 'beta = ')
 
             # Probability
-            p = self.prob(*params, h0)
+            p = self.prob(alpha, beta, h0)
+            if debug:
+                p = K.print_tensor(p, message='p = ')
+            # Sometimes we get p = 0 due to limited numerical precision, which
+            # is bad for the log in the next step
+            p = K.clip(p, K.epsilon(), 1.)
+            if debug:
+                p = K.print_tensor(p, message='p(post-clip) = ')
 
             # -log(p_{alpha,beta}(h0))
-            return K.mean(-K.log(p), axis=-1)
+            logp = -K.log(p)
+            if debug:
+                logp = K.print_tensor(logp, message='logp = ')
+
+            mean = K.mean(logp, axis=-1)
+            if debug:
+                mean = K.print_tensor(mean, message='mean = ')
+
+            return mean
 
         # print(K.eval(loss(K.variable(value=np.array([[15, 0], [10, 0]])), K.variable(value=np.array([[1.5, 2.3], [2.6, 2.7]])))))
         # Should give 4.66331 for gammapoisson
@@ -533,5 +573,7 @@ if __name__ == '__main__':
     # print(K.eval(prob_lognormal(K.variable(value=5.0), K.variable(value=1.5), K.variable(value=3))))
     # Should give 0.0033465
 
-    n = NormalizedHindexNet(prob=prob_lognormal)
+    # n = NormalizedHindexNet(prob=prob_gammapoisson)
+    # n = NormalizedHindexNet(prob=prob_lognormal)
+    n = NormalizedHindexNet(prob=prob_gamma)
     n.train()
