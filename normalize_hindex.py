@@ -160,8 +160,7 @@ class NormalizedHindexNet(Net):
         effective_max_papers = len(max(author_papers, key=lambda x: len(x)))
         if effective_max_papers != 1238:
             # TODO
-            raise Exception("Note to self: Modify / add mechanism to generator"
-                            "in self.train()")
+            raise Exception("Note to self: Modify also self.load_data_x")
         print("#authors", numauthors)
         print("Effective max papers", effective_max_papers)
 
@@ -171,15 +170,26 @@ class NormalizedHindexNet(Net):
         xcolumns = self.get_column_names_x(exclude=False)
         xauxcolumns = self.get_column_names_xaux(exclude=False)
 
+        # Each paper (at the moment) has only 1 category
+        # So there will only be exactly 1 non-zero value in our one-hot vector
+        # Therefore, we can save a lot of memory by saving only that one value
+        # in our sparse matrix
+        if self.numcategories:
+            sparse_xcolumns = len(xcolumns) - self.numcategories + 1
+        else:
+            sparse_xcolumns = len(xcolumns)
+
         # Per-paper input data
-        # Prepare for sparse array with shape (nauthors, npapers * nfeatures)
+        # Prepare for sparse array with shape (nauthors*npapers, nfeatures)
         print("Preparing sparse rows/cols/data...")
-        rows = np.concatenate(
-            [i*np.ones(len(xcolumns)*len(author_papers[author_id]))
-             for i, author_id in enumerate(author_ids)])
-        cols = np.concatenate(
-            [np.arange(len(xcolumns)*len(author_papers[author_id]))
-             for i, author_id in enumerate(author_ids)])
+        nactualpapers = 0
+        for author_id in author_ids:
+            nactualpapers += len(author_papers[author_id])
+        rows = np.concatenate([i*np.ones(sparse_xcolumns)
+                               for i in range(0, nactualpapers)])
+        # NOTE: The column is not correct for the 'category', which is
+        # corrected in the loop below
+        cols = np.tile(np.arange(sparse_xcolumns), nactualpapers)
         data = np.zeros(rows.shape)
 
         # For #coauthors
@@ -246,7 +256,7 @@ class NormalizedHindexNet(Net):
 
             print(author_id, "has #papers:", len(papers))
 
-            tmp = np.zeros((len(papers), len(xcolumns)))
+            tmp = np.zeros((len(papers), sparse_xcolumns))
 
             # Explicitly tell net which data are padding and which are papers
             index = self.data_positions['padding']
@@ -276,10 +286,21 @@ class NormalizedHindexNet(Net):
                                       for paper in papers])
 
             # categories
+            # NOTE: Categories are saved as a one-hot vector in the sparse
+            # matrix. However, we only save the '1' and not the '0's of this
+            # one-hot vector to save memory. Therefore, we must adjust the
+            # column to save this '1' to
             index = self.data_positions['categories']
             for paperi, paper in enumerate(papers):
+                # The value to save is '1'
+                # After flattening, this '1' ends up at
+                # tmp.flatten()[paperi*tmp.shape[1] + index]
+                tmp[paperi, index] = 1
+                # The column to save this to is the category_index'th category
+                # column (which start at 'index')
                 category_index = categories[paper_categories[paper]]
-                tmp[paperi, index+category_index] = 1
+                cols[datapos + paperi*tmp.shape[1] + index] =\
+                    index + category_index
 
             # Translate to sparse matrix format
             tmp = tmp.flatten()
@@ -306,9 +327,9 @@ class NormalizedHindexNet(Net):
         gc.collect()
 
         # Create sparse matrix for x
-        x = sparse.csr_matrix(
+        x = sparse.csc_matrix(
             (data, (rows, cols)),
-            shape=(numauthors, effective_max_papers*len(xcolumns)))
+            shape=(numauthors*effective_max_papers, len(xcolumns)))
 
         # xaux to DataFrame
         xaux = pd.DataFrame(xaux, columns=xauxcolumns)
@@ -353,16 +374,55 @@ class NormalizedHindexNet(Net):
         # TODO: Support x columns?
 
         if indices is not None:
+            nfeatures = x.shape[1]
+            # TODO: Don't hardcode 1238
+            npapers = 1238
+            print("Restricting to selected authors...")
+            x = x.reshape((-1, npapers*nfeatures)).tocsr()
             x = x[indices]
+            x = x.reshape((-1, nfeatures)).tocsr()
+        else:
+            x = x.tocsr()
 
         return x, xaux
 
     def _scale_inputs(self, x, xaux, is_train_inputs):
-        # TODO: sklearn StandardScaler can apparently work with sparse matrices.
-        # However, we should have (nauthors * npapers, nfeatures) instead of
-        # (nauthors, npapers * nfeatures) for this to be useful.
-        # -> Investigate using CSC instead or CSR (for columns) with this shape
-        pass
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.externals import joblib
+
+        filename = os.path.join(self.data_dir, 'scaler')
+        try:
+            scaler = joblib.load(filename)
+            print(scaler)
+        except FileNotFoundError:
+            if is_train_inputs:
+                scaler = StandardScaler(copy=False, with_mean=False)
+                scaler.partial_fit(x)
+                joblib.dump(scaler, filename)
+            else:
+                raise Exception("Scaler not found")
+
+        x = scaler.transform(x)
+
+        scale_fields_aux = [
+            ]
+        for field in scale_fields_aux:
+            column = field + "0"
+            if column not in xaux.columns and field in self.__exclude_data:
+                continue
+            filename = os.path.join(self.data_dir,
+                                    'scaler-%s' % field)
+            try:
+                scaler = joblib.load(filename)
+            except FileNotFoundError:
+                if is_train_inputs:
+                    scaler = StandardScaler(copy=False)
+                    scaler.fit(xaux[[column]])
+                    joblib.dump(scaler, filename)
+                else:
+                    raise Exception("Scaler not found")
+
+            xaux[[column]] = scaler.transform(xaux[[column]])
 
     def train(self, activation='tanh', load=False):
 
@@ -375,32 +435,30 @@ class NormalizedHindexNet(Net):
 
         # Prepare generator
         from math import ceil
-        nauthors = x.shape[0]
-        batch_size = 50
-        batches_per_epoch = ceil(nauthors / batch_size)
-        # TODO: Don't hardcode
-        effective_max_papers = 1238
-        nfeatures = x.shape[1]//effective_max_papers
-        if x.shape[1] % effective_max_papers:
-            raise Exception("non-integer nfeatures?")
+        nauthors = y.shape[0]
+        author_batch_size = 50
+        batches_per_epoch = ceil(nauthors / author_batch_size)
+        nfeatures = x.shape[1]
+        npapers = x.shape[0]//nauthors
+        if x.shape[0] % nauthors:
+            raise Exception("Non-integer npapers")
         def generator():
             while True:
                 start = 0
-                end = batch_size
+                end = author_batch_size
                 for i in range(0, batches_per_epoch):
 
                     # Make dense matrix from csr matrix
-                    xbatch = x[start:end].toarray()
+                    xbatch = x[start*npapers:end*npapers].toarray()
 
                     # Reshape to (nauthors, npapers, nfeatures)
-                    xbatch = xbatch.reshape(
-                        (xbatch.shape[0], effective_max_papers, -1))
+                    xbatch = xbatch.reshape((-1, npapers, nfeatures))
 
                     yield ({'perpaper_inputs': xbatch,
                             'perauthor_inputs': xaux[start:end]},
                             y[start:end])
-                    start += batch_size
-                    end += batch_size
+                    start += author_batch_size
+                    end += author_batch_size
 
         # How many parameters does our probability distribution have?
         num_prob_params = len(signature(self.prob).parameters)-1
@@ -433,7 +491,7 @@ class NormalizedHindexNet(Net):
             from keras.layers import Input, Dense, Conv1D, concatenate, \
                 GlobalAveragePooling1D
 
-            perpaper_inputs = Input(shape=(effective_max_papers, nfeatures),
+            perpaper_inputs = Input(shape=(npapers, nfeatures),
                                     name='perpaper_inputs')
             perauthor_inputs = Input(shape=xaux[0].shape,
                                      name='perauthor_inputs')
