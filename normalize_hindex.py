@@ -108,6 +108,8 @@ class NormalizedHindexNet(Net):
         self.data_dir = os.path.join(settings.DATA_DIR, 'normalized-hindex')
         self.prob = prob
 
+        print("Using prob", self.prob.name)
+
         # Make sure directories exist
         os.makedirs(self.data_dir, exist_ok=True)
 
@@ -650,7 +652,34 @@ if __name__ == '__main__':
 
     # n = NormalizedHindexNet(prob=ProbGammaPoisson())
     # n = NormalizedHindexNet(prob=ProbLognormal())
-    n = NormalizedHindexNet(prob=ProbGamma())
+    # n = NormalizedHindexNet(prob=ProbGamma())
     # n.train()
     # n.train(load=True)
     # n.evaluate()
+
+    import argparse
+    from runner import *
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('action', choices=['train', 'evaluate'])
+    parser.add_argument('--prob', choices=['gamma', 'lognormal',
+                                           'gammapoisson'])
+
+    args = parser.parse_args()
+    if args.prob == 'gamma':
+        prob = ProbGamma()
+    elif args.prob == 'lognormal':
+        prob = ProbLognormal()
+    elif args.prob == 'gammapoisson':
+        prob = ProbGammaPoisson()
+    else:
+        raise Exception("Invalid prob")
+
+    n = NormalizedHindexNet(prob=prob)
+    if args.action == 'train':
+        n.train()
+    elif args.action == 'evaluate':
+        n.evaluate()
+    else:
+        raise Exception("Invalid action")
+
