@@ -21,6 +21,14 @@ class Prob(ABC):
     def prob(self, h0, *args):
         pass
 
+    @abstractmethod
+    def cum(self, h0, *args):
+        pass
+
+    def normalized_hindex(self, h0, *args):
+        # 1/P(h>h0) = 1/(1-P(h<=h0))
+        return 1/(1-self.cum(h0, *args))
+
     @property
     def num_params(self):
         # How many parameters does our probability distribution have?
@@ -36,6 +44,9 @@ class ProbGammaPoisson(Prob):
         tf = K.tensorflow_backend.tf
         return tf.exp(tf.lgamma(a))
 
+    def cum(self, h0, alpha, beta):
+        raise Exception("Not implemented yet")
+
     def prob(self, h0, alpha, beta):
         # http://www.math.wm.edu/~leemis/chart/UDR/PDFs/Gammapoisson.pdf
         return (self.gamma(h0 + beta) * alpha**h0) / \
@@ -47,19 +58,24 @@ class ProbLognormal(Prob):
     def name(self):
         return 'lognormal'
 
+    def _lognormal_cum(self, x, mu, sigma):
+        erfc = K.tensorflow_backend.tf.math.erfc
+        # https://en.wikipedia.org/wiki/Log-normal_distribution#Cumulative_distribution_function
+        return (1/2) * erfc(-(K.log(x) - mu)/(np.sqrt(2) * sigma))
+
+    def cum(self, h0, mu, sigma):
+        return self._lognormal_cum(h0+1, mu, sigma) -\
+            self._lognormal_cum(0., mu, sigma)
+
     def prob(self, h0, mu, sigma):
         # NOTE: We add .001 to h0, since keras/tf cannot handle our prob_lognormal
         # for h0 -> 0 very well. If we don't do this, we tend to always get
         # loss=nan
         h0 += .001
 
-        erfc = K.tensorflow_backend.tf.math.erfc
-        def lognormal_cum(x):
-            # https://en.wikipedia.org/wiki/Log-normal_distribution#Cumulative_distribution_function
-            return (1/2) * erfc(-(K.log(x) - mu)/(np.sqrt(2) * sigma))
-
         # Log-normal probability mass function
-        return lognormal_cum(h0+1) - lognormal_cum(h0)
+        return self._lognormal_cum(h0+1, mu, sigma) -\
+            self._lognormal_cum(h0, mu, sigma)
 
 
 class ProbGamma(Prob):
@@ -67,20 +83,25 @@ class ProbGamma(Prob):
     def name(self):
         return 'gamma'
 
+    def _gamma_cum(self, x, alpha, beta):
+        # https://www.tensorflow.org/api_docs/python/tf/math/igamma
+        # igamma(a, x) = 1/Gamma(a) * int_0^x (t^(a-1) exp(-t))
+        igamma = K.tensorflow_backend.tf.math.igamma
+        # https://en.wikipedia.org/wiki/Gamma_distribution
+        return igamma(alpha, beta*x)
+
+    def cum(self, h0, alpha, beta):
+        return self._gamma_cum(h0+1, alpha, beta) -\
+            self._gamma_cum( 0., alpha, beta)
+
     def prob(self, h0, alpha, beta):
         # NOTE: We add .001 to h0, since keras/tf cannot handle our prob_gamma for
         # h0 -> 0 very well. If we don't do this, we tend to always get loss=nan
         h0 += .001
 
-        # https://www.tensorflow.org/api_docs/python/tf/math/igamma
-        # igamma(a, x) = 1/Gamma(a) * int_0^x (t^(a-1) exp(-t))
-        igamma = K.tensorflow_backend.tf.math.igamma
-        def gamma_cum(x):
-            # https://en.wikipedia.org/wiki/Gamma_distribution
-            return igamma(alpha, beta*x)
-
         # Gamma probability mass function
-        return gamma_cum(h0+1) - gamma_cum(h0)
+        return self._gamma_cum(h0+1, alpha, beta) -\
+            self._gamma_cum(h0, alpha, beta)
 
 
 class NormalizedHindexNet(Net):
@@ -644,11 +665,27 @@ class NormalizedHindexNet(Net):
 if __name__ == '__main__':
 
 
+    # Test for prob
     # print(K.eval(ProbGamma().prob(K.variable(value=3-.001), K.variable(value=5.0), K.variable(value=1.5))))
     # Should give 0.247047
-
     # print(K.eval(ProbLognormal().prob(K.variable(value=3-.001), K.variable(value=5.0), K.variable(value=1.5))))
     # Should give 0.0033465
+
+    # Test for cum
+    # h0 = K.variable(value=3.)
+    # a = K.variable(value=1.)
+    # b = K.variable(value=1.)
+    # prob = ProbLognormal() # Should give 0.9816844
+    # prob = ProbGamma() # Should give 0.650361
+    # p = prob.prob
+    # c = prob.cum
+    # print(K.eval(p(0., a,b)+p(1., a,b)+p(2., a, b)+p(3.,a,b)))
+    # print(K.eval(c(h0, a, b)))
+
+    # Test for normalize_hindex
+    # prob = ProbLognormal() # Should give 2.86009
+    # prob = ProbGamma() # Should give 54.598
+    # print(K.eval(prob.normalized_hindex(K.variable(value=3.), K.variable(value=1.), K.variable(value=1.))))
 
     # n = NormalizedHindexNet(prob=ProbGammaPoisson())
     # n = NormalizedHindexNet(prob=ProbLognormal())
