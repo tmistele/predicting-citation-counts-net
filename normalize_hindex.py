@@ -491,8 +491,8 @@ class NormalizedHindexNet(Net):
             # Both need to be positive
             if num_prob_params != 2:
                 raise Exception("Not implemented")
-            alpha = K.exp(y_pred[:, 0])
-            beta = K.exp(y_pred[:, 1])
+            alpha = y_pred[:, 0]
+            beta = y_pred[:, 1]
             if debug:
                 alpha = K.print_tensor(alpha, 'alpha = ')
                 beta = K.print_tensor(beta, 'beta = ')
@@ -549,7 +549,7 @@ class NormalizedHindexNet(Net):
             tmp = Dense(units=70, activation=activation)(tmp)
 
             outputs = Dense(units=num_prob_params,
-                            activation='relu')(tmp)
+                            activation='softplus')(tmp)
 
             model = Model(inputs=[perpaper_inputs, perauthor_inputs],
                           outputs=outputs)
