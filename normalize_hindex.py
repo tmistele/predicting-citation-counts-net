@@ -8,47 +8,79 @@ import settings
 from inspect import signature
 import pandas as pd
 from scipy import sparse
+from abc import ABC, abstractmethod
 
 
-def prob_gammapoisson(alpha, beta, h0):
-    def gamma(a):
+class Prob(ABC):
+    @property
+    @abstractmethod
+    def name(self):
+        pass
+
+    @abstractmethod
+    def prob(self, h0, *args):
+        pass
+
+    @property
+    def num_params(self):
+        # How many parameters does our probability distribution have?
+        return len(signature(self.prob).parameters)-1
+
+
+class ProbGammaPoisson(Prob):
+    @property
+    def name(self):
+        return 'gamma-poisson'
+
+    def gamma(self, a):
         tf = K.tensorflow_backend.tf
         return tf.exp(tf.lgamma(a))
 
-    # http://www.math.wm.edu/~leemis/chart/UDR/PDFs/Gammapoisson.pdf
-    return (gamma(h0 + beta) * alpha**h0) / \
-        (gamma(beta) * (1+alpha)**(beta+h0) * gamma(1+h0))
+    def prob(self, h0, alpha, beta):
+        # http://www.math.wm.edu/~leemis/chart/UDR/PDFs/Gammapoisson.pdf
+        return (self.gamma(h0 + beta) * alpha**h0) / \
+            (self.gamma(beta) * (1+alpha)**(beta+h0) * self.gamma(1+h0))
 
 
-def prob_lognormal(mu, sigma, h0):
-    # NOTE: We add .001 to h0, since keras/tf cannot handle our prob_lognormal
-    # for h0 -> 0 very well. If we don't do this, we tend to always get
-    # loss=nan
-    h0 += .001
+class ProbLognormal(Prob):
+    @property
+    def name(self):
+        return 'lognormal'
 
-    erfc = K.tensorflow_backend.tf.math.erfc
-    def lognormal_cum(x):
-        # https://en.wikipedia.org/wiki/Log-normal_distribution#Cumulative_distribution_function
-        return (1/2) * erfc(-(K.log(x) - mu)/(np.sqrt(2) * sigma))
+    def prob(self, h0, mu, sigma):
+        # NOTE: We add .001 to h0, since keras/tf cannot handle our prob_lognormal
+        # for h0 -> 0 very well. If we don't do this, we tend to always get
+        # loss=nan
+        h0 += .001
 
-    # Log-normal probability mass function
-    return lognormal_cum(h0+1) - lognormal_cum(h0)
+        erfc = K.tensorflow_backend.tf.math.erfc
+        def lognormal_cum(x):
+            # https://en.wikipedia.org/wiki/Log-normal_distribution#Cumulative_distribution_function
+            return (1/2) * erfc(-(K.log(x) - mu)/(np.sqrt(2) * sigma))
+
+        # Log-normal probability mass function
+        return lognormal_cum(h0+1) - lognormal_cum(h0)
 
 
-def prob_gamma(alpha, beta, h0):
-    # NOTE: We add .001 to h0, since keras/tf cannot handle our prob_gamma for
-    # h0 -> 0 very well. If we don't do this, we tend to always get loss=nan
-    h0 += .001
+class ProbGamma(Prob):
+    @property
+    def name(self):
+        return 'gamma'
 
-    # https://www.tensorflow.org/api_docs/python/tf/math/igamma
-    # igamma(a, x) = 1/Gamma(a) * int_0^x (t^(a-1) exp(-t))
-    igamma = K.tensorflow_backend.tf.math.igamma
-    def gamma_cum(x):
-        # https://en.wikipedia.org/wiki/Gamma_distribution
-        return igamma(alpha, beta*x)
+    def prob(self, h0, alpha, beta):
+        # NOTE: We add .001 to h0, since keras/tf cannot handle our prob_gamma for
+        # h0 -> 0 very well. If we don't do this, we tend to always get loss=nan
+        h0 += .001
 
-    # Gamma probability mass function
-    return gamma_cum(h0+1) - gamma_cum(h0)
+        # https://www.tensorflow.org/api_docs/python/tf/math/igamma
+        # igamma(a, x) = 1/Gamma(a) * int_0^x (t^(a-1) exp(-t))
+        igamma = K.tensorflow_backend.tf.math.igamma
+        def gamma_cum(x):
+            # https://en.wikipedia.org/wiki/Gamma_distribution
+            return igamma(alpha, beta*x)
+
+        # Gamma probability mass function
+        return gamma_cum(h0+1) - gamma_cum(h0)
 
 
 class NormalizedHindexNet(Net):
@@ -113,7 +145,7 @@ class NormalizedHindexNet(Net):
         np.save(self.get_author_ids_filename(), data)
 
     def get_net_filename(self):
-        return os.path.join(self.data_dir, 'net.h5')
+        return os.path.join(self.data_dir, 'net-%s.h5' % self.prob.name)
 
     def get_data_author_generator(self):
         authors = self.get_train_authors()
@@ -366,7 +398,7 @@ class NormalizedHindexNet(Net):
                                    columns=xauxcolumns)
             except ValueError as e:
                 if len(xauxcolumns) == 0:
-                    xaux = pd.DataFrame(np.zeros((x.shape[0], 0)), columns=[])
+                    xaux = pd.DataFrame(np.zeros((len(indices), 0)))
                 else:
                     raise e
 
@@ -431,24 +463,65 @@ class NormalizedHindexNet(Net):
 
             xaux[[column]] = scaler.transform(xaux[[column]])
 
-    def train(self, activation='tanh', load=False):
+    def get_loss_function(self, debug=False):
+        def loss(y_true, y_pred):
+            # y_true contains the h-index at index 0 and is then (possibly)
+            # padded with zeros
+            h0 = y_true[:, 0]
+            if debug:
+                h0 = K.print_tensor(h0, message='h0 = ')
 
-        # Speed up batch evaluations
-        self.clear_keras_session()
+            # y_pred contains the parameters of the probability distribution
+            if debug:
+                y_pred = K.print_tensor(y_pred, message='y_pred = ')
 
-        # Load data
-        print("Loading net training data...")
-        x, xaux, y = self.load_train_data()
+            # Both need to be positive
+            if self.prob.num_params != 2:
+                raise Exception("Not implemented num_prob_params = "+
+                                self.prob.num_params)
+            alpha = y_pred[:, 0]
+            beta = y_pred[:, 1]
+            if debug:
+                alpha = K.print_tensor(alpha, 'alpha = ')
+                beta = K.print_tensor(beta, 'beta = ')
 
-        # How many parameters does our probability distribution have?
-        num_prob_params = len(signature(self.prob).parameters)-1
+            # Probability
+            p = self.prob.prob(h0, alpha, beta)
+            if debug:
+                p = K.print_tensor(p, message='p = ')
+            # Sometimes we get p = 0 due to limited numerical precision, which
+            # is bad for the log in the next step
+            p = K.clip(p, K.epsilon(), 1.)
+            if debug:
+                p = K.print_tensor(p, message='p(post-clip) = ')
 
-        # Zero-padding for y
-        # ytmp = np.zeros((y.shape[0], num_prob_params))
-        # ytmp[:, 0] = y.flatten()
-        # y = ytmp
+            # -log(p_{alpha,beta}(h0))
+            logp = -K.log(p)
+            if debug:
+                logp = K.print_tensor(logp, message='logp = ')
 
-        # Prepare generator
+            mean = K.mean(logp, axis=-1)
+            if debug:
+                mean = K.print_tensor(mean, message='mean = ')
+
+            return mean
+
+        # print(K.eval(loss(K.variable(value=np.array([[15, 0], [10, 0]])), K.variable(value=np.array([[1.5, 2.3], [2.6, 2.7]])))))
+        # Should give 4.66331 for gammapoisson
+
+        return loss
+
+    def init_loss_function(self):
+        # Make loading models with custom loss function work
+        # https://github.com/keras-team/keras/issues/5916#issuecomment-290344248
+        import keras.losses
+        keras.losses.myloss = self.get_loss_function()
+
+    def load_model(self):
+        self.init_loss_function()
+        return super().load_model()
+
+    def get_generator(self, x, xaux, y):
         from math import ceil
         nauthors = y.shape[0]
         author_batch_size = 50
@@ -475,51 +548,25 @@ class NormalizedHindexNet(Net):
                     start += author_batch_size
                     end += author_batch_size
 
+        return generator, batches_per_epoch, nauthors, npapers, nfeatures
 
-        # Custom loss function
-        def loss(y_true, y_pred, debug=False):
-            # y_true contains the h-index at index 0 and is then (possibly)
-            # padded with zeros
-            h0 = y_true[:, 0]
-            if debug:
-                h0 = K.print_tensor(h0, message='h0 = ')
+    def train(self, activation='tanh', load=False):
 
-            # y_pred contains the parameters of the probability distribution
-            if debug:
-                y_pred = K.print_tensor(y_pred, message='y_pred = ')
+        # Speed up batch evaluations
+        self.clear_keras_session()
 
-            # Both need to be positive
-            if num_prob_params != 2:
-                raise Exception("Not implemented")
-            alpha = y_pred[:, 0]
-            beta = y_pred[:, 1]
-            if debug:
-                alpha = K.print_tensor(alpha, 'alpha = ')
-                beta = K.print_tensor(beta, 'beta = ')
+        # Load data
+        print("Loading net training data...")
+        x, xaux, y = self.load_train_data()
 
-            # Probability
-            p = self.prob(alpha, beta, h0)
-            if debug:
-                p = K.print_tensor(p, message='p = ')
-            # Sometimes we get p = 0 due to limited numerical precision, which
-            # is bad for the log in the next step
-            p = K.clip(p, K.epsilon(), 1.)
-            if debug:
-                p = K.print_tensor(p, message='p(post-clip) = ')
+        # Zero-padding for y
+        # ytmp = np.zeros((y.shape[0], self.prob.num_params))
+        # ytmp[:, 0] = y.flatten()
+        # y = ytmp
 
-            # -log(p_{alpha,beta}(h0))
-            logp = -K.log(p)
-            if debug:
-                logp = K.print_tensor(logp, message='logp = ')
-
-            mean = K.mean(logp, axis=-1)
-            if debug:
-                mean = K.print_tensor(mean, message='mean = ')
-
-            return mean
-
-        # print(K.eval(loss(K.variable(value=np.array([[15, 0], [10, 0]])), K.variable(value=np.array([[1.5, 2.3], [2.6, 2.7]])))))
-        # Should give 4.66331 for gammapoisson
+        # Prepare generator
+        generator, batches_per_epoch, nauthors, npapers, nfeatures = \
+            self.get_generator(x, xaux, y)
 
         # Build/load keras model
         if load:
@@ -548,14 +595,16 @@ class NormalizedHindexNet(Net):
             tmp = concatenate([tmp, perauthor_inputs])
             tmp = Dense(units=70, activation=activation)(tmp)
 
-            outputs = Dense(units=num_prob_params,
+            outputs = Dense(units=self.prob.num_params,
                             activation='softplus')(tmp)
 
             model = Model(inputs=[perpaper_inputs, perauthor_inputs],
                           outputs=outputs)
 
+            self.init_loss_function()
+
             model.compile(
-                loss=loss, # Use custom loss function
+                loss='myloss', # Use custom loss function
                 optimizer='adam')
 
         # Fit keras model
@@ -563,17 +612,45 @@ class NormalizedHindexNet(Net):
                             steps_per_epoch=batches_per_epoch)
         model.save(self.get_net_filename())
 
+    def do_evaluate(self, y, y_net):
+        lossfunc = self.get_loss_function()
+        lossval = K.eval(lossfunc(y, y_net))
+        print(self.prob.name)
+        print("-> Loss", lossval)
+
+        return lossval
+
+    def evaluate(self):
+
+        # Load data
+        print("Loading net evaluation data...")
+        x, xaux, y = self.load_validation_data()
+
+        # Speed up batch evaluations
+        self.clear_keras_session()
+
+        # Prepare generator
+        generator, batches_per_epoch, *_ = \
+            self.get_generator(x, xaux, y)
+
+        model = self.load_model()
+        y_net = model.predict_generator(generator(), steps=batches_per_epoch)
+
+        return self.do_evaluate(y, y_net)
+
 
 if __name__ == '__main__':
 
 
-    # print(K.eval(prob_gamma(K.variable(value=5.0), K.variable(value=1.5), K.variable(value=3))))
+    # print(K.eval(ProbGamma().prob(K.variable(value=3-.001), K.variable(value=5.0), K.variable(value=1.5))))
     # Should give 0.247047
 
-    # print(K.eval(prob_lognormal(K.variable(value=5.0), K.variable(value=1.5), K.variable(value=3))))
+    # print(K.eval(ProbLognormal().prob(K.variable(value=3-.001), K.variable(value=5.0), K.variable(value=1.5))))
     # Should give 0.0033465
 
-    # n = NormalizedHindexNet(prob=prob_gammapoisson)
-    # n = NormalizedHindexNet(prob=prob_lognormal)
-    n = NormalizedHindexNet(prob=prob_gamma)
-    n.train()
+    # n = NormalizedHindexNet(prob=ProbGammaPoisson())
+    # n = NormalizedHindexNet(prob=ProbLognormal())
+    n = NormalizedHindexNet(prob=ProbGamma())
+    # n.train()
+    # n.train(load=True)
+    # n.evaluate()
