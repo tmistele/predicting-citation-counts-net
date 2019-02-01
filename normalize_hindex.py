@@ -68,14 +68,12 @@ class ProbLognormal(Prob):
             self._lognormal_cum(0., mu, sigma)
 
     def prob(self, h0, mu, sigma):
-        # NOTE: We add .001 to h0, since keras/tf cannot handle our prob_lognormal
-        # for h0 -> 0 very well. If we don't do this, we tend to always get
-        # loss=nan
-        h0 += .001
-
         # Log-normal probability mass function
-        return self._lognormal_cum(h0+1, mu, sigma) -\
-            self._lognormal_cum(h0, mu, sigma)
+        # NOTE: We add .001 to h0, since keras/tf cannot handle our
+        # prob_lognormal for h0 -> 0 very well. If we don't do this, we tend to
+        # always get loss=nan
+        return self._lognormal_cum(h0+1+.001, mu, sigma) -\
+            self._lognormal_cum(h0+.001, mu, sigma)
 
 
 class ProbGamma(Prob):
@@ -95,16 +93,17 @@ class ProbGamma(Prob):
             self._gamma_cum( 0., alpha, beta)
 
     def prob(self, h0, alpha, beta):
-        # NOTE: We add .001 to h0, since keras/tf cannot handle our prob_gamma for
-        # h0 -> 0 very well. If we don't do this, we tend to always get loss=nan
-        h0 += .001
-
         # Gamma probability mass function
-        return self._gamma_cum(h0+1, alpha, beta) -\
-            self._gamma_cum(h0, alpha, beta)
+        # NOTE: We add .001 to h0, since keras/tf cannot handle our prob_gamma
+        # for h0 -> 0 very well. If we don't do this, we tend to always get
+        # loss=nan Gamma probability mass function
+        return self._gamma_cum(h0+1+.001, alpha, beta) -\
+            self._gamma_cum(h0+.001, alpha, beta)
 
 
 class NormalizedHindexNet(Net):
+
+    epochs = 20
 
     # We don't want to predict the future, just analyze the status quo
     cutoff_date = date(2019, 1, 1)
@@ -132,7 +131,7 @@ class NormalizedHindexNet(Net):
         print("Using prob", self.prob.name)
 
         # Make sure directories exist
-        os.makedirs(self.data_dir, exist_ok=True)
+        os.makedirs(os.path.join(self.data_dir, 'models'), exist_ok=True)
 
         # Directory for net x and y data may be set to a different location
         # (e.g. for running on cluster)
@@ -168,7 +167,8 @@ class NormalizedHindexNet(Net):
         np.save(self.get_author_ids_filename(), data)
 
     def get_net_filename(self):
-        return os.path.join(self.data_dir, 'net-%s.h5' % self.prob.name)
+        return os.path.join(self.data_dir, 'models',
+                            'net-%s.h5' % self.prob.name)
 
     def get_data_author_generator(self):
         authors = self.get_train_authors()
@@ -635,31 +635,102 @@ class NormalizedHindexNet(Net):
                             steps_per_epoch=batches_per_epoch)
         model.save(self.get_net_filename())
 
-    def do_evaluate(self, y, y_net):
+    def do_evaluate(self, y, y_net, normalized_hindex):
+
+        # Loss
         lossfunc = self.get_loss_function()
         lossval = K.eval(lossfunc(y, y_net))
         print(self.prob.name)
         print("-> Loss", lossval)
 
+        # Prepare normalized hindex such that it is roughly straight line in a
+        # h0-normalizedhindex plot
+        if self.prob.name == 'lognormal':
+            normalized_hindex = np.power(normalized_hindex, .33)
+            name = 'normalized hindex^(.33)'
+        elif self.prob.name == 'gamma':
+            normalized_hindex = np.log(normalized_hindex)
+            name = 'log(normalized hindex)'
+
+        print("Plotting...", y.shape[0])
+        import matplotlib
+        matplotlib.use('PDF')
+        import matplotlib.pyplot as plt
+
+        # Scatter plot
+        plt.scatter(y[:, 0], normalized_hindex, s=.5, alpha=.2)
+        plt.xlabel('h0')
+        plt.ylabel(name)
+        filename = self.get_net_filename().replace('.h5',
+                                                   '-validation-results.png')
+        plt.savefig(filename)
+
+        plt.xlim(0, 4.5)
+        plt.ylim(0.5, 3)
+        plt.savefig(filename.replace('.png', '-zoomed.png'))
+
+        plt.close()
+
+        # Histograms for individual h0s
+        import scipy.stats as st
+        binsx = np.arange(np.max(y[:, 0]))
+        max = 50
+        binsy = np.linspace(0, max, np.ceil(max/0.01))
+        hist, *_ = st.binned_statistic_2d(y[:, 0], normalized_hindex, None,
+                                          'count',
+                                          bins=(binsx, binsy))
+
+        for h0 in [0, 3, 5, 10]:
+            indices = np.where(hist[h0]>0)
+            plt.title('h0 = '+str(h0))
+            plt.ylabel('log10(#authors)')
+            plt.xlabel(name)
+            plt.plot(binsy[indices], np.log10(hist[h0][indices]))
+            filename = self.get_net_filename().replace(
+                '.h5', '-validation-results-h0-%s-.png' % h0)
+            plt.savefig(filename)
+            plt.close()
+
         return lossval
 
     def evaluate(self):
 
-        # Load data
-        print("Loading net evaluation data...")
-        x, xaux, y = self.load_validation_data()
+        filename = self.get_net_filename().replace('.h5',
+                                                   '-validation-results.npz')
+        try:
+            tmp = np.load(filename)
+            y = tmp['y_true']
+            y_net = tmp['y_pred']
+            normalized_hindex = tmp['normalized_hindex']
+        except FileNotFoundError:
+            # Load data
+            print("Loading net evaluation data...")
+            x, xaux, y = self.load_validation_data()
 
-        # Speed up batch evaluations
-        self.clear_keras_session()
+            # Speed up batch evaluations
+            self.clear_keras_session()
 
-        # Prepare generator
-        generator, batches_per_epoch, *_ = \
-            self.get_generator(x, xaux, y)
+            # Prepare generator
+            generator, batches_per_epoch, *_ = \
+                self.get_generator(x, xaux, y)
 
-        model = self.load_model()
-        y_net = model.predict_generator(generator(), steps=batches_per_epoch)
+            model = self.load_model()
 
-        return self.do_evaluate(y, y_net)
+            print("Predicting...")
+            y_net = model.predict_generator(generator(),
+                                            steps=batches_per_epoch)
+
+            if self.prob.num_params != 2:
+                raise Exception("Not implemented yet")
+            normalized_hindex = K.eval(self.prob.normalized_hindex(
+                K.variable(value=y[:, 0]),
+                K.variable(value=y_net[:, 0]),
+                K.variable(value=y_net[:, 1])))
+
+            np.savez(filename, y_true=y, y_pred=y_net,
+                     normalized_hindex=normalized_hindex)
+
+        return self.do_evaluate(y, y_net, normalized_hindex)
 
 
 if __name__ == '__main__':
