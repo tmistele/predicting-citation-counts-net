@@ -657,7 +657,26 @@ class NormalizedHindexNet(Net):
         matplotlib.use('PDF')
         import matplotlib.pyplot as plt
 
-        # Scatter plot
+        # Scatter plot parameters
+        print(y_net[0:10, 0])
+        plt.hist(y_net[:, 0], bins=500)[0]
+        plt.ylabel('#')
+        plt.xlabel('param0')
+        filename = self.get_net_filename().replace('.h5',
+                                                   '-validation-param0.png')
+        plt.savefig(filename)
+        plt.close()
+
+        print(y_net[0:10, 1])
+        plt.hist(y_net[:, 1], bins=500)[0]
+        plt.ylabel('#')
+        plt.xlabel('param1')
+        filename = self.get_net_filename().replace('.h5',
+                                                   '-validation-param1.png')
+        plt.savefig(filename)
+        plt.close()
+
+        # Scatter plot h0 vs normalized hindex
         plt.scatter(y[:, 0], normalized_hindex, s=.5, alpha=.2)
         plt.xlabel('h0')
         plt.ylabel(name)
