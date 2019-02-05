@@ -242,17 +242,26 @@ class NormalizedHindexNet(Net):
         else:
             sparse_xcolumns = len(xcolumns)
 
+        ntotalpapers = 0
+        for author_id in author_ids:
+            ntotalpapers += len(author_papers[author_id])
+
         # Per-paper input data
         # Prepare for sparse array with shape (nauthors*npapers, nfeatures)
         print("Preparing sparse rows/cols/data...")
-        nactualpapers = 0
-        for author_id in author_ids:
-            nactualpapers += len(author_papers[author_id])
-        rows = np.concatenate([i*np.ones(sparse_xcolumns)
-                               for i in range(0, nactualpapers)])
+        rows = np.zeros(ntotalpapers*sparse_xcolumns, dtype=np.int64)
+        pos = 0
+        for i, author_id in enumerate(author_ids):
+            tmp = np.concatenate(
+                [i*effective_max_papers + j*np.ones(sparse_xcolumns)
+                 for j in range(0, len(author_papers[author_id]))])
+            rows[pos:pos+len(tmp)] = tmp
+            pos += len(tmp)
+        if pos != rows.shape[0]:
+            raise Exception("Invalid pos?!")
         # NOTE: The column is not correct for the 'category', which is
         # corrected in the loop below
-        cols = np.tile(np.arange(sparse_xcolumns), nactualpapers)
+        cols = np.tile(np.arange(sparse_xcolumns), ntotalpapers)
         data = np.zeros(rows.shape)
 
         # For #coauthors
