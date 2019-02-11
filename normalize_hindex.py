@@ -721,6 +721,29 @@ class NormalizedHindexNet(Net):
 
         return lossval
 
+    def predict_and_normalize(self, x, xaux, y):
+        # Speed up batch evaluations
+        self.clear_keras_session()
+
+        # Prepare generator
+        generator, batches_per_epoch, *_ = \
+            self.get_generator(x, xaux, y)
+
+        model = self.load_model()
+
+        print("Predicting...")
+        y_net = model.predict_generator(generator(),
+                                        steps=batches_per_epoch)
+
+        if self.prob.num_params != 2:
+            raise Exception("Not implemented yet")
+        normalized_hindex = K.eval(self.prob.normalized_hindex(
+            K.variable(value=y[:, 0]),
+            K.variable(value=y_net[:, 0]),
+            K.variable(value=y_net[:, 1])))
+
+        return y_net, normalized_hindex
+
     def evaluate(self):
 
         filename = self.get_net_filename().replace('.h5',
@@ -735,30 +758,26 @@ class NormalizedHindexNet(Net):
             print("Loading net evaluation data...")
             x, xaux, y = self.load_validation_data()
 
-            # Speed up batch evaluations
-            self.clear_keras_session()
-
-            # Prepare generator
-            generator, batches_per_epoch, *_ = \
-                self.get_generator(x, xaux, y)
-
-            model = self.load_model()
-
-            print("Predicting...")
-            y_net = model.predict_generator(generator(),
-                                            steps=batches_per_epoch)
-
-            if self.prob.num_params != 2:
-                raise Exception("Not implemented yet")
-            normalized_hindex = K.eval(self.prob.normalized_hindex(
-                K.variable(value=y[:, 0]),
-                K.variable(value=y_net[:, 0]),
-                K.variable(value=y_net[:, 1])))
+            y_net, normalized_hindex = self.predict_and_normalize(x, xaux, y)
 
             np.savez(filename, y_true=y, y_pred=y_net,
                      normalized_hindex=normalized_hindex)
 
         return self.do_evaluate(y, y_net, normalized_hindex)
+
+    def predict_all(self):
+        # Load data
+        print("Loading all data...")
+        # Load all authors, not just validation authors
+        indices = np.arange(len(self.get_train_authors()))
+        x, xaux, y = self.load_validation_data(indices=(indices,))
+
+        y_net, normalized_hindex = self.predict_and_normalize(x, xaux, y)
+
+        filename = self.get_net_filename().replace('.h5',
+                                                   '-predict_all.npz')
+        np.savez(filename, y_true=y, y_pred=y_net,
+                    normalized_hindex=normalized_hindex)
 
 
 if __name__ == '__main__':
@@ -797,7 +816,7 @@ if __name__ == '__main__':
     from runner import *
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('action', choices=['train', 'evaluate'])
+    parser.add_argument('action', choices=['train', 'evaluate', 'predict-all'])
     parser.add_argument('--prob', choices=['gamma', 'lognormal',
                                            'gammapoisson'])
 
@@ -816,6 +835,8 @@ if __name__ == '__main__':
         n.train()
     elif args.action == 'evaluate':
         n.evaluate()
+    elif args.action == 'predict-all':
+        n.predict_all()
     else:
         raise Exception("Invalid action")
 
