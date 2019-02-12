@@ -654,12 +654,8 @@ class NormalizedHindexNet(Net):
 
         # Prepare normalized hindex such that it is roughly straight line in a
         # h0-normalizedhindex plot
-        if self.prob.name == 'lognormal':
-            normalized_hindex = np.power(normalized_hindex, .33)
-            name = 'normalized hindex^(.33)'
-        elif self.prob.name == 'gamma':
-            normalized_hindex = np.log(normalized_hindex)
-            name = 'log(normalized hindex)'
+        normalized_hindex = np.log(normalized_hindex)
+        name = 'log(normalized hindex)'
 
         print("Plotting...", y.shape[0])
         import matplotlib
@@ -692,12 +688,6 @@ class NormalizedHindexNet(Net):
         filename = self.get_net_filename().replace('.h5',
                                                    '-validation-results.png')
         plt.savefig(filename)
-
-        plt.xlim(0, 4.5)
-        plt.ylim(0.5, 3)
-        plt.savefig(filename.replace('.png', '-zoomed.png'))
-
-        plt.close()
 
         # Histograms for individual h0s
         import scipy.stats as st
@@ -774,10 +764,166 @@ class NormalizedHindexNet(Net):
 
         y_net, normalized_hindex = self.predict_and_normalize(x, xaux, y)
 
-        filename = self.get_net_filename().replace('.h5',
-                                                   '-predict_all.npz')
+        filename = self.get_net_filename().replace('.h5', '-predict_all.npz')
         np.savez(filename, y_true=y, y_pred=y_net,
-                    normalized_hindex=normalized_hindex)
+                 normalized_hindex=normalized_hindex)
+
+    def _check_plot(self, indices0, indices1, label0, label1, suffix, h0,
+                    normalized_hindex, y):
+        data0 = np.log(normalized_hindex[indices0])
+        data1= np.log(normalized_hindex[indices1])
+
+        print("Plotting...")
+        import matplotlib
+        matplotlib.use('PDF')
+        import matplotlib.pyplot as plt
+
+        if h0 is None:
+            fig, (ax1, axbottom) = plt.subplots(nrows=2, sharex=True,
+                                                figsize=(10, 10))
+            bins = np.linspace(0, 20, 20)
+        else:
+            fig, ax1 = plt.subplots(nrows=1, figsize=(10, 5))
+            bins = np.linspace(0, h0+10, h0+10)
+
+        ax1.hist(data0, bins, alpha=0.5, density=True, label=label0)
+        ax1.hist(data1, bins, alpha=0.5, density=True, label=label1)
+        ax1.set_xlabel('log(normalized h-index)')
+        ax1.legend()
+        if h0 is None:
+            axbottom.hist(y[indices0], bins, alpha=0.5, density=True,
+                          label=label0)
+            axbottom.hist(y[indices1], bins, alpha=0.5, density=True,
+                          label=label1)
+            axbottom.set_xlabel('h0')
+            axbottom.legend()
+        else:
+            fig.suptitle('h0 = %s' % h0)
+
+        filename = self.get_net_filename().replace(
+            '.h5', '-checks-%s-h0-%s.png' % (suffix, h0))
+        plt.savefig(filename)
+        plt.close()
+
+    def predictions_checks(self):
+        h0s = [None, 5]
+
+        # According to https://github.com/paperscape/paperscape-data/, physics
+        # categories have much more of their citations extracted than math
+        # categories
+        compare_categories = (
+            ['hep-th', 'hep-ph', 'gr-qc'],
+            ['cs', 'math'])
+
+        # Older people should probably have a higher h-index just by having
+        # been around longer
+        compare_ages = (15, 5)
+
+        # Load predicted data
+        filename = self.get_net_filename().replace('.h5', '-predict_all.npz')
+        tmp = np.load(filename)
+        y = tmp['y_true']
+        y_net = tmp['y_pred']
+        normalized_hindex = tmp['normalized_hindex']
+
+        # Load data for ages
+        import cbor2
+        print("Loading author papers...")
+        author_papers = cbor2.load(open(
+            os.path.join(settings.DATA_DIR, 'arxiv', 'keywords-backend',
+                         'nn_data', 'author_papers.cbor'),
+            'rb'
+        ))
+
+        print("Loading paper dates...")
+        paper_dates = cbor2.load(open(
+            os.path.join(settings.DATA_DIR, 'arxiv', 'keywords-backend',
+                         'nn_data', 'paper_dates.cbor'),
+            'rb'
+        ))
+
+        # Load data for categories
+        import yaml
+        print("Loading (paper) categories...")
+        # astro.CO -> astro etc.
+        categories = yaml.load(open(
+            os.path.join(settings.DATA_DIR, 'arxiv', 'keywords-backend',
+                         'nn_data', 'categories.yaml'),
+            'rb'
+        ))
+        tmp = list(set([category.split('.')[0] for category in categories]))
+        tmp = {value: i for i, value in enumerate(tmp)}
+        if(len(tmp) != self.numcategories):
+            raise Exception("len(categories) != self.numcategories")
+        categories = {id: tmp[name.split('.')[0]]
+                      for id, name in enumerate(categories)}
+
+        compare_category_ids = (
+            [tmp[name] for name in compare_categories[0]],
+            [tmp[name] for name in compare_categories[1]])
+
+        paper_categories = cbor2.load(open(
+            os.path.join(settings.DATA_DIR, 'arxiv', 'keywords-backend',
+                         'nn_data', 'paper_categories.cbor'),
+            'rb'
+        ))
+
+        # Do comparison
+        for h0 in h0s:
+            # Find authors with given h0
+            if h0 is None:
+                h0indices = (np.arange(y.shape[0]),)
+            else:
+                h0indices = np.where(y[:, 0] == h0)
+
+            # Find authors for each age
+            print("Calculating age h0 = %s..." % h0)
+            indices0 = []
+            indices1 = []
+            for author in h0indices[0]:
+                age_years  = max(
+                    [(self.cutoff_date -
+                      date.fromtimestamp(paper_dates[paper])).days/365
+                     for paper in author_papers[author]])
+
+                if compare_ages[0] <= age_years <= compare_ages[0]+5:
+                    indices0.append(author)
+                    continue
+                if compare_ages[1] <= age_years <= compare_ages[1]+5:
+                    indices1.append(author)
+                    continue
+
+            # Plot comparisons
+            self._check_plot(indices0, indices1,
+                             "%s+5 yr" % compare_ages[0],
+                             "%s+5 yr" % compare_ages[1],
+                             'age', h0, normalized_hindex, y)
+
+            # Find authors for each category
+            print("Calculating categories h0 = %s..." % h0)
+            indices0 = []
+            indices1 = []
+            for author in h0indices[0]:
+                cats = np.array([categories[paper_categories[paper]]
+                                for paper in author_papers[author]])
+                match0 = 0
+                for compare_cat in compare_category_ids[0]:
+                    match0 += np.count_nonzero(cats == compare_cat)
+                if match0 > len(cats)/2:
+                    indices0.append(author)
+                    continue
+                match1 = 0
+                for compare_cat in compare_category_ids[1]:
+                    match1 += np.count_nonzero(cats == compare_cat)
+                if match1 > len(cats)/2:
+                    indices1.append(author)
+                    continue
+
+            # Plot comparisons
+            self._check_plot(indices0, indices1,
+                             ', '.join(compare_categories[0]),
+                             ', '.join(compare_categories[1]),
+                             'categories', h0, normalized_hindex, y)
 
 
 if __name__ == '__main__':
@@ -816,7 +962,8 @@ if __name__ == '__main__':
     from runner import *
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('action', choices=['train', 'evaluate', 'predict-all'])
+    parser.add_argument('action', choices=['train', 'evaluate', 'predict-all',
+                                           'checks'])
     parser.add_argument('--prob', choices=['gamma', 'lognormal',
                                            'gammapoisson'])
 
@@ -837,6 +984,8 @@ if __name__ == '__main__':
         n.evaluate()
     elif args.action == 'predict-all':
         n.predict_all()
+    elif args.action == 'checks':
+        n.predictions_checks()
     else:
         raise Exception("Invalid action")
 
