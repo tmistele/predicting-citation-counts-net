@@ -207,13 +207,178 @@ class NormalizedHindexNet(Net):
         columns = ['y' + str(i) for i in range(0, self.predict_after_years+1)]
         return pd.DataFrame(y, columns=columns)
 
-    def generate_data_x(self):
-
-        print("Generating x data...")
+    def _generate_paper_x(self):
+        print("Generating x data for all papers...")
 
         import cbor2, yaml
 
         print("Loading author papers...")
+
+        xcolumns = self.get_column_names_x(exclude=False)
+
+        # Each paper (at the moment) has only 1 category
+        # So there will only be exactly 1 non-zero value in our one-hot vector
+        # Therefore, we can save a lot of memory by saving only that one value
+        # in our sparse matrix
+        if self.numcategories:
+            sparse_xcolumns = len(xcolumns) - self.numcategories + 1
+        else:
+            sparse_xcolumns = len(xcolumns)
+
+        # For #coauthors
+        print("Loading paper authors...")
+        paper_authors = cbor2.load(open(
+            os.path.join(settings.DATA_DIR, 'arxiv', 'keywords-backend',
+                         'nn_data', 'paper_authors.cbor'),
+            'rb'
+        ))
+
+        # For months
+        print("Loading paper dates...")
+        paper_dates = cbor2.load(open(
+            os.path.join(settings.DATA_DIR, 'arxiv', 'keywords-backend',
+                         'nn_data', 'paper_dates.cbor'),
+            'rb'
+        ))
+
+        # For hotness
+        paper_hotness1 = cbor2.load(open(
+            os.path.join(settings.DATA_DIR, 'arxiv', 'keywords-backend',
+                         'nn_data', 'paper_keyword_hotness_1year.cbor'),
+            'rb'
+        ))
+        paper_hotness5 = cbor2.load(open(
+            os.path.join(settings.DATA_DIR, 'arxiv', 'keywords-backend',
+                         'nn_data', 'paper_keyword_hotness_5year.cbor'),
+            'rb'
+        ))
+        paper_hotnessinf = cbor2.load(open(
+            os.path.join(settings.DATA_DIR, 'arxiv', 'keywords-backend',
+                         'nn_data', 'paper_keyword_hotness_alltime.cbor'),
+            'rb'
+        ))
+
+        # For categories
+        print("Loading (paper) categories...")
+        # astro.CO -> astro etc.
+        categories = yaml.load(open(
+            os.path.join(settings.DATA_DIR, 'arxiv', 'keywords-backend',
+                         'nn_data', 'categories.yaml'),
+            'rb'
+        ))
+        tmp = list(set([category.split('.')[0]
+                        for category in categories]))
+        # Ensure deterministic category ids, which is prevented by set()
+        tmp.sort()
+        tmp = {value: i for i, value in enumerate(tmp)}
+        if(len(tmp) != self.numcategories):
+            raise Exception("len(categories) != self.numcategories")
+        categories = {id: tmp[name.split('.')[0]]
+                      for id, name in enumerate(categories)}
+
+        paper_categories = cbor2.load(open(
+            os.path.join(settings.DATA_DIR, 'arxiv', 'keywords-backend',
+                         'nn_data', 'paper_categories.cbor'),
+            'rb'
+        ))
+
+        ntotalpapers = len(paper_dates)
+
+        # Per-paper input data
+        # Prepare for sparse array with shape (ntotalpapers, nfeatures)
+        print("Preparing sparse rows/cols/data...")
+        rows = np.concatenate([i*np.ones(sparse_xcolumns)
+                               for i in range(0, ntotalpapers)])
+        # NOTE: The column is not correct for the 'category', which is
+        # corrected in the loop below
+        cols = np.tile(np.arange(sparse_xcolumns), ntotalpapers)
+        data = np.zeros(rows.shape)
+
+        datapos = 0
+        for paper_id in range(0, ntotalpapers):
+            tmp = np.zeros(sparse_xcolumns)
+
+            # Explicitly tell net which data are padding and which are papers
+            index = self.data_positions['padding']
+            tmp[index] = 1
+
+            # num_authors
+            index = self.data_positions['num_authors']
+            tmp[index] = len(paper_authors[paper_id])
+
+            # months
+            index = self.data_positions['months']
+            tmp[index] = (self.cutoff_date -
+                          date.fromtimestamp(paper_dates[paper_id])).days/30
+
+            # Hotness 1, 5, inf
+            index = self.data_positions['hotness_1']
+            tmp[index] = paper_hotness1[paper_id]
+            index = self.data_positions['hotness_5']
+            tmp[index] = paper_hotness5[paper_id]
+            index = self.data_positions['hotness_inf']
+            tmp[index] = paper_hotnessinf[paper_id]
+
+            # categories
+            # NOTE: Categories are saved as a one-hot vector in the sparse
+            # matrix. However, we only save the '1' and not the '0's of this
+            # one-hot vector to save memory. Therefore, we must adjust the
+            # column to save this '1' to
+            index = self.data_positions['categories']
+            # The value to save is '1'
+            # After flattening, this '1' ends up at
+            # tmp.flatten()[paperi*tmp.shape[1] + index]
+            tmp[index] = 1
+            # The column to save this to is the category_index'th category
+            # column (which start at 'index')
+            category_index = categories[paper_categories[paper_id]]
+            cols[datapos + index] = index + category_index
+
+            # Translate to sparse matrix format
+            tmp = tmp.flatten()
+            data[datapos:datapos+len(tmp)] = tmp
+            datapos += len(tmp)
+
+        # Consistency check
+        if datapos != len(data):
+            raise Exception("datapos != len(data)")
+
+        # Free memory
+        print("Freeing memory...")
+        del paper_authors
+        del paper_dates
+        del paper_hotness1
+        del paper_hotness5
+        del paper_hotnessinf
+        del paper_categories
+        del tmp
+
+        import gc
+        gc.collect()
+
+        # Create sparse matrix for paperx
+        paperx = sparse.csr_matrix(
+            (data, (rows, cols)),
+            shape=(ntotalpapers, len(xcolumns)))
+
+        return paperx
+
+    def load_data_paperx(self):
+        try:
+            file_paperx = os.path.join(self.data_dir_xy, 'net_data_paperx.npz')
+            paperx = sparse.load_npz(file_paperx)
+        except FileNotFoundError as _:
+            paperx = self._generate_paper_x()
+            sparse.save_npz(file_paperx, paperx)
+        return paperx
+
+    def generate_data_x(self):
+
+        print("Generating x data for authors...")
+        paperx = self.load_data_paperx()
+
+        print("Loading author papers...")
+        import cbor2
         author_papers = cbor2.load(open(
             os.path.join(settings.DATA_DIR, 'arxiv', 'keywords-backend',
                          'nn_data', 'author_papers.cbor'),
@@ -264,61 +429,6 @@ class NormalizedHindexNet(Net):
         cols = np.tile(np.arange(sparse_xcolumns), ntotalpapers)
         data = np.zeros(rows.shape)
 
-        # For #coauthors
-        print("Loading paper authors...")
-        paper_authors = cbor2.load(open(
-            os.path.join(settings.DATA_DIR, 'arxiv', 'keywords-backend',
-                         'nn_data', 'paper_authors.cbor'),
-            'rb'
-        ))
-
-        # For months
-        print("Loading paper dates...")
-        paper_dates = cbor2.load(open(
-            os.path.join(settings.DATA_DIR, 'arxiv', 'keywords-backend',
-                         'nn_data', 'paper_dates.cbor'),
-            'rb'
-        ))
-
-        # For hotness
-        paper_hotness1 = cbor2.load(open(
-            os.path.join(settings.DATA_DIR, 'arxiv', 'keywords-backend',
-                         'nn_data', 'paper_keyword_hotness_1year.cbor'),
-            'rb'
-        ))
-        paper_hotness5 = cbor2.load(open(
-            os.path.join(settings.DATA_DIR, 'arxiv', 'keywords-backend',
-                         'nn_data', 'paper_keyword_hotness_5year.cbor'),
-            'rb'
-        ))
-        paper_hotnessinf = cbor2.load(open(
-            os.path.join(settings.DATA_DIR, 'arxiv', 'keywords-backend',
-                         'nn_data', 'paper_keyword_hotness_alltime.cbor'),
-            'rb'
-        ))
-
-
-        # For categories
-        print("Loading (paper) categories...")
-        # astro.CO -> astro etc.
-        categories = yaml.load(open(
-            os.path.join(settings.DATA_DIR, 'arxiv', 'keywords-backend',
-                         'nn_data', 'categories.yaml'),
-            'rb'
-        ))
-        tmp = list(set([category.split('.')[0] for category in categories]))
-        tmp = {value: i for i, value in enumerate(tmp)}
-        if(len(tmp) != self.numcategories):
-            raise Exception("len(categories) != self.numcategories")
-        categories = {id: tmp[name.split('.')[0]]
-                      for id, name in enumerate(categories)}
-
-        paper_categories = cbor2.load(open(
-            os.path.join(settings.DATA_DIR, 'arxiv', 'keywords-backend',
-                         'nn_data', 'paper_categories.cbor'),
-            'rb'
-        ))
-
         # Per-author input data
         xaux = np.zeros((numauthors, len(xauxcolumns)))
 
@@ -328,49 +438,35 @@ class NormalizedHindexNet(Net):
 
             print(author_id, "has #papers:", len(papers))
 
-            tmp = np.zeros((len(papers), sparse_xcolumns))
+            # Take data from paperx. This contains zeros from one-hot category
+            # vector
+            tmp = paperx[papers].toarray().reshape(
+                (len(papers), len(xcolumns)))
 
-            # Explicitly tell net which data are padding and which are papers
-            index = self.data_positions['padding']
+            # Find category indices by looking at where the ones are
+            index = self.data_positions['categories']
+            category_indices = np.where(
+                tmp[:, index:index+self.numcategories] == 1)[1]
+
+            # Remove the zeros for our final sparse format
+            tmp = np.delete(tmp, np.s_[index:index+self.numcategories-1],
+                            axis=1)
             tmp[:, index] = np.ones(len(papers))
-
-            # num_authors
-            index = self.data_positions['num_authors']
-            tmp[:, index] = np.array([len(paper_authors[paper])
-                                      for paper in papers])
-
-            # months
-            index = self.data_positions['months']
-            tmp[:, index] = np.array(
-                [(self.cutoff_date -
-                  date.fromtimestamp(paper_dates[paper])).days/30
-                 for paper in papers])
-
-            # Hotness 1, 5, inf
-            index = self.data_positions['hotness_1']
-            tmp[:, index] = np.array([paper_hotness1[paper]
-                                      for paper in papers])
-            index = self.data_positions['hotness_5']
-            tmp[:, index] = np.array([paper_hotness5[paper]
-                                      for paper in papers])
-            index = self.data_positions['hotness_inf']
-            tmp[:, index] = np.array([paper_hotnessinf[paper]
-                                      for paper in papers])
+            assert(tmp.shape == (len(papers), sparse_xcolumns))
 
             # categories
             # NOTE: Categories are saved as a one-hot vector in the sparse
             # matrix. However, we only save the '1' and not the '0's of this
             # one-hot vector to save memory. Therefore, we must adjust the
             # column to save this '1' to
-            index = self.data_positions['categories']
             for paperi, paper in enumerate(papers):
                 # The value to save is '1'
                 # After flattening, this '1' ends up at
                 # tmp.flatten()[paperi*tmp.shape[1] + index]
-                tmp[paperi, index] = 1
+                assert(tmp[paperi, index] == 1)
                 # The column to save this to is the category_index'th category
                 # column (which start at 'index')
-                category_index = categories[paper_categories[paper]]
+                category_index = category_indices[paperi]
                 cols[datapos + paperi*tmp.shape[1] + index] =\
                     index + category_index
 
@@ -386,12 +482,6 @@ class NormalizedHindexNet(Net):
         # Free memory
         print("Freeing memory...")
         del author_papers
-        del paper_authors
-        del paper_dates
-        del paper_hotness1
-        del paper_hotness5
-        del paper_hotnessinf
-        del paper_categories
         del tmp
         del author_ids
 
@@ -711,6 +801,17 @@ class NormalizedHindexNet(Net):
 
         return lossval
 
+    def normalize(self, y, y_net):
+        if self.prob.num_params != 2:
+            raise Exception("Not implemented yet")
+        normalized_hindex = K.eval(self.prob.normalized_hindex(
+            K.variable(value=y[:, 0]),
+            K.variable(value=y_net[:, 0]),
+            K.variable(value=y_net[:, 1])))
+
+        return normalized_hindex
+
+
     def predict_and_normalize(self, x, xaux, y):
         # Speed up batch evaluations
         self.clear_keras_session()
@@ -725,12 +826,7 @@ class NormalizedHindexNet(Net):
         y_net = model.predict_generator(generator(),
                                         steps=batches_per_epoch)
 
-        if self.prob.num_params != 2:
-            raise Exception("Not implemented yet")
-        normalized_hindex = K.eval(self.prob.normalized_hindex(
-            K.variable(value=y[:, 0]),
-            K.variable(value=y_net[:, 0]),
-            K.variable(value=y_net[:, 1])))
+        normalized_hindex = self.normalize(y, y_net)
 
         return y_net, normalized_hindex
 
@@ -767,6 +863,65 @@ class NormalizedHindexNet(Net):
         filename = self.get_net_filename().replace('.h5', '-predict_all.npz')
         np.savez(filename, y_true=y, y_pred=y_net,
                  normalized_hindex=normalized_hindex)
+
+    def predict_by_papers(self):
+
+        # TODO: For now just check author_id = 0
+        c = self.con().cursor()
+        c.execute("""
+            SELECT p.id FROM papers AS p
+            INNER JOIN author_papers AS pa
+            ON p.id = pa.paper_id
+            WHERE pa.author_id = 0""")
+        tmp = []
+        for (paper_id,) in c:
+            tmp.append(paper_id)
+        by_papers = [tmp]
+
+        # Load model
+        model = self.load_model()
+
+        # Generate input x, xaux
+        paperx = self.load_data_paperx()
+        nfeatures = paperx.shape[1]
+        # TODO: Don't hardcode
+        effective_max_papers = 1238
+
+        # NOTE: In principle here one could start a loop and calculate
+        # for different by_papers arrays very quickly as everything is already
+        # set up
+
+        # Start by calculating h0
+        c = self.con().cursor()
+        y = np.zeros((len(by_papers), 1))
+        for i, papers in enumerate(by_papers):
+            c.execute("""
+                SELECT num_citations
+                FROM papers
+                WHERE id = ANY(%s)
+                ORDER BY num_citations DESC""", (papers,))
+            hindex = 0
+            for (num_citations,) in c:
+                if num_citations <= hindex:
+                    break
+                hindex += 1
+            y[i] = hindex
+
+        x = np.zeros((len(by_papers), effective_max_papers, nfeatures))
+        for i, papers in enumerate(by_papers):
+            x[i, :len(papers), :] = paperx[papers].toarray()
+        xaux = np.zeros((len(by_papers), 0))
+
+        # Scale inputs
+        x = x.reshape((-1, nfeatures))
+        self._scale_inputs(x, xaux, is_train_inputs=False)
+        x = x.reshape((len(by_papers), effective_max_papers, nfeatures))
+
+        # Finally predict and normalize
+        y_net = model.predict({'perpaper_inputs': x, 'perauthor_inputs': xaux})
+        normalized_hindex = self.normalize(y, y_net)
+
+        return y, y_net, normalized_hindex
 
     def _check_plot(self, indices0, indices1, label0, label1, suffix, h0,
                     normalized_hindex, y):
@@ -963,7 +1118,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('action', choices=['train', 'evaluate', 'predict-all',
-                                           'checks'])
+                                           'predict-by-papers', 'checks'])
     parser.add_argument('--prob', choices=['gamma', 'lognormal',
                                            'gammapoisson'])
 
@@ -984,6 +1139,8 @@ if __name__ == '__main__':
         n.evaluate()
     elif args.action == 'predict-all':
         n.predict_all()
+    elif args.action == 'predict-by-papers':
+        n.predict_by_papers()
     elif args.action == 'checks':
         n.predictions_checks()
     else:
