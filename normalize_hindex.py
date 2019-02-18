@@ -5,100 +5,9 @@ import os
 import keras.backend as K
 import psycopg2
 import settings
-from inspect import signature
 import pandas as pd
 from scipy import sparse
-from abc import ABC, abstractmethod
-
-
-class Prob(ABC):
-    @property
-    @abstractmethod
-    def name(self):
-        pass
-
-    @abstractmethod
-    def prob(self, h0, *args):
-        pass
-
-    @abstractmethod
-    def cum(self, h0, *args):
-        pass
-
-    def normalized_hindex(self, h0, *args):
-        # 1/P(h>h0) = 1/(1-P(h<=h0))
-        return 1/(1-self.cum(h0, *args))
-
-    @property
-    def num_params(self):
-        # How many parameters does our probability distribution have?
-        return len(signature(self.prob).parameters)-1
-
-
-class ProbGammaPoisson(Prob):
-    @property
-    def name(self):
-        return 'gamma-poisson'
-
-    def gamma(self, a):
-        tf = K.tensorflow_backend.tf
-        return tf.exp(tf.lgamma(a))
-
-    def cum(self, h0, alpha, beta):
-        raise Exception("Not implemented yet")
-
-    def prob(self, h0, alpha, beta):
-        # http://www.math.wm.edu/~leemis/chart/UDR/PDFs/Gammapoisson.pdf
-        return (self.gamma(h0 + beta) * alpha**h0) / \
-            (self.gamma(beta) * (1+alpha)**(beta+h0) * self.gamma(1+h0))
-
-
-class ProbLognormal(Prob):
-    @property
-    def name(self):
-        return 'lognormal'
-
-    def _lognormal_cum(self, x, mu, sigma):
-        erfc = K.tensorflow_backend.tf.math.erfc
-        # https://en.wikipedia.org/wiki/Log-normal_distribution#Cumulative_distribution_function
-        return (1/2) * erfc(-(K.log(x) - mu)/(np.sqrt(2) * sigma))
-
-    def cum(self, h0, mu, sigma):
-        return self._lognormal_cum(h0+1, mu, sigma) -\
-            self._lognormal_cum(0., mu, sigma)
-
-    def prob(self, h0, mu, sigma):
-        # Log-normal probability mass function
-        # NOTE: We add .001 to h0, since keras/tf cannot handle our
-        # prob_lognormal for h0 -> 0 very well. If we don't do this, we tend to
-        # always get loss=nan
-        return self._lognormal_cum(h0+1+.001, mu, sigma) -\
-            self._lognormal_cum(h0+.001, mu, sigma)
-
-
-class ProbGamma(Prob):
-    @property
-    def name(self):
-        return 'gamma'
-
-    def _gamma_cum(self, x, alpha, beta):
-        # https://www.tensorflow.org/api_docs/python/tf/math/igamma
-        # igamma(a, x) = 1/Gamma(a) * int_0^x (t^(a-1) exp(-t))
-        igamma = K.tensorflow_backend.tf.math.igamma
-        # https://en.wikipedia.org/wiki/Gamma_distribution
-        return igamma(alpha, beta*x)
-
-    def cum(self, h0, alpha, beta):
-        return self._gamma_cum(h0+1, alpha, beta) -\
-            self._gamma_cum( 0., alpha, beta)
-
-    def prob(self, h0, alpha, beta):
-        # Gamma probability mass function
-        # NOTE: We add .001 to h0, since keras/tf cannot handle our prob_gamma
-        # for h0 -> 0 very well. If we don't do this, we tend to always get
-        # loss=nan Gamma probability mass function
-        return self._gamma_cum(h0+1+.001, alpha, beta) -\
-            self._gamma_cum(h0+.001, alpha, beta)
+import normalize_hindex_prob as prob
 
 
 class NormalizedHindexNet(Net):
@@ -801,16 +710,24 @@ class NormalizedHindexNet(Net):
 
         return lossval
 
+    def get_normalize_function(self):
+        try:
+            return self._normalize
+        except AttributeError:
+            if self.prob.num_params != 2:
+                raise Exception("Not implemented yet")
+            h0 = K.placeholder(ndim=2)
+            param0 = K.placeholder(ndim=2)
+            param1 = K.placeholder(ndim=2)
+            self._normalize = K.function(
+                [h0, param0, param1],
+                [self.prob.normalized_hindex(h0, param0, param1)])
+
+        return self._normalize
+
     def normalize(self, y, y_net):
-        if self.prob.num_params != 2:
-            raise Exception("Not implemented yet")
-        normalized_hindex = K.eval(self.prob.normalized_hindex(
-            K.variable(value=y[:, 0]),
-            K.variable(value=y_net[:, 0]),
-            K.variable(value=y_net[:, 1])))
-
-        return normalized_hindex
-
+        return self.get_normalize_function()(
+            [y[:, 0], y_net[:, 0], y_net[:, 1]])[0]
 
     def predict_and_normalize(self, x, xaux, y):
         # Speed up batch evaluations
@@ -880,12 +797,12 @@ class NormalizedHindexNet(Net):
 
         # Load model
         model = self.load_model()
+        input_shape = model.get_layer(index=0).input_shape
+        nfeatures = input_shape[2]
+        npapers = input_shape[1]
 
         # Generate input x, xaux
         paperx = self.load_data_paperx()
-        nfeatures = paperx.shape[1]
-        # TODO: Don't hardcode
-        effective_max_papers = 1238
 
         # Scale x
         self._scale_inputs(paperx, xaux=None, is_train_inputs=False)
@@ -911,7 +828,7 @@ class NormalizedHindexNet(Net):
             y[i] = hindex
 
         # Generate input data
-        x = np.zeros((len(by_papers), effective_max_papers, nfeatures))
+        x = np.zeros((len(by_papers), npapers, nfeatures))
         for i, papers in enumerate(by_papers):
             x[i, :len(papers), :] = paperx[papers].toarray()
         xaux = np.zeros((len(by_papers), 0))
@@ -1123,11 +1040,11 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     if args.prob == 'gamma':
-        prob = ProbGamma()
+        prob = prob.ProbGamma()
     elif args.prob == 'lognormal':
-        prob = ProbLognormal()
+        prob = prob.ProbLognormal()
     elif args.prob == 'gammapoisson':
-        prob = ProbGammaPoisson()
+        prob = prob.ProbGammaPoisson()
     else:
         raise Exception("Invalid prob")
 
