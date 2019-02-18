@@ -887,6 +887,9 @@ class NormalizedHindexNet(Net):
         # TODO: Don't hardcode
         effective_max_papers = 1238
 
+        # Scale x
+        self._scale_inputs(paperx, xaux=None, is_train_inputs=False)
+
         # NOTE: In principle here one could start a loop and calculate
         # for different by_papers arrays very quickly as everything is already
         # set up
@@ -907,17 +910,13 @@ class NormalizedHindexNet(Net):
                 hindex += 1
             y[i] = hindex
 
+        # Generate input data
         x = np.zeros((len(by_papers), effective_max_papers, nfeatures))
         for i, papers in enumerate(by_papers):
             x[i, :len(papers), :] = paperx[papers].toarray()
         xaux = np.zeros((len(by_papers), 0))
 
-        # Scale inputs
-        x = x.reshape((-1, nfeatures))
-        self._scale_inputs(x, xaux, is_train_inputs=False)
-        x = x.reshape((len(by_papers), effective_max_papers, nfeatures))
-
-        # Finally predict and normalize
+        # Predict and normalize
         y_net = model.predict({'perpaper_inputs': x, 'perauthor_inputs': xaux})
         normalized_hindex = self.normalize(y, y_net)
 
