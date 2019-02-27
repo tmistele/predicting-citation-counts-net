@@ -18,8 +18,9 @@ class Prob(ABC):
         pass
 
     def normalized_hindex(self, h0, *args):
-        # 1/P(h>h0) = 1/(1-P(h<=h0))
-        return 1/(1-self.cum(h0, *args))
+        # 1/P(h>=h0) = 1/(1-P(h<h0)) = 1/(1-P(h<=h0-1))
+        # For this to work for h0=0, we must make sure that self.cum(-1) = 0
+        return 1/(1-self.cum(h0-1, *args))
 
     @property
     def num_params(self):
