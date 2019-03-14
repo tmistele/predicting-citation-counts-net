@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from inspect import signature
 import keras.backend as K
+import numpy as np
 
 
 class Prob(ABC):

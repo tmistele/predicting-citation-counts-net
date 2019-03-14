@@ -12,7 +12,7 @@ import normalize_hindex_prob as prob
 
 class NormalizedHindexNet(Net):
 
-    epochs = 20
+    epochs = 100
 
     # We don't want to predict the future, just analyze the status quo
     cutoff_date = date(2019, 1, 1)
@@ -95,13 +95,12 @@ class NormalizedHindexNet(Net):
 
         c = self.con().cursor()
 
-        authors = ','.join([str(id) for id in author_ids])
-
-        print("Fetching h-indices from elementary_metrics...")
+        print("Fetching h-indices from elementary_author_metrics...")
+        # h-index has index -1
         c.execute("""
             SELECT value, author_id
-            FROM elementary_metrics
-            WHERE index = 0
+            FROM elementary_author_metrics
+            WHERE index = -1
             ORDER BY author_id ASC""")
         tmp = {}
         for (value, author_id) in c:
@@ -120,8 +119,6 @@ class NormalizedHindexNet(Net):
         print("Generating x data for all papers...")
 
         import cbor2, yaml
-
-        print("Loading author papers...")
 
         xcolumns = self.get_column_names_x(exclude=False)
 
@@ -295,7 +292,7 @@ class NormalizedHindexNet(Net):
         ))
         numauthors = len(author_papers)
         effective_max_papers = len(max(author_papers, key=lambda x: len(x)))
-        if effective_max_papers != 1238:
+        if effective_max_papers != 1273:
             # TODO
             raise Exception("Note to self: Modify also self.load_data_x")
         print("#authors", numauthors)
@@ -446,8 +443,8 @@ class NormalizedHindexNet(Net):
 
         if indices is not None:
             nfeatures = x.shape[1]
-            # TODO: Don't hardcode 1238
-            npapers = 1238
+            # TODO: Don't hardcode 1273
+            npapers = 1273
             print("Restricting to selected authors...")
             x = x.reshape((-1, npapers*nfeatures)).tocsr()
             x = x[indices]
