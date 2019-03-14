@@ -26,6 +26,25 @@ class PaperscapeImporter:
                 urlretrieve(url, file)
             else:
                 print("Already downloaded", year)
+
+    def generator(self):
+        for year in range(self.year_first, self.year_last+1):
+            file = os.path.join(self.data_dir, str(year) + '.csv')
+            for line in open(file, 'rt'):
+                if line[0] == '#':
+                    continue
+
+                # Format is
+                # arxiv-id;comma-separated-arxiv-categories;num-found-refs;num-total-refs;comma-separated-refs;comma-separated-authors;title
+
+                data = line.split(";", 7)
+                if data[2] == '0':
+                    continue
+
+                citing = data[0]
+                cited = data[4].split(',')
+
+                yield citing, cited
     
     def __import_to_db(self):
         
@@ -35,39 +54,28 @@ class PaperscapeImporter:
         for row in c:
             paper_ids[row[1]] = row[0]
         
-        for year in range(self.year_first, self.year_last+1):
-            file = os.path.join(self.data_dir, str(year) + '.csv')
-            for line in open(file, 'rt'):
-                if line[0] == '#':
+        for citing, cited in self.generator():
+            if citing not in paper_ids:
+                print("Skip", citing)
+                continue
+
+            citing_id = paper_ids[citing]
+            print(citing, citing_id)
+
+            values = []
+            for cited_paper in cited:
+                if cited_paper not in paper_ids:
                     continue
-                
-                # Format is
-                # arxiv-id;comma-separated-arxiv-categories;num-found-refs;num-total-refs;comma-separated-refs;comma-separated-authors;title
-                
-                data = line.split(";", 7)
-                if data[2] == '0':
-                    continue
-                
-                if data[0] not in paper_ids:
-                    print("Skip", data[0])
-                    continue
-                
-                citing_id = paper_ids[data[0]]
-                print(data[0], citing_id)
-                
-                values = []
-                for cited_paper in data[4].split(','):
-                    if cited_paper not in paper_ids:
-                        continue
-                    values.append(
-                        '(%s, %s)' % (citing_id, paper_ids[cited_paper])
-                    )
-                
-                if len(values):
-                    c.execute(
-                        "INSERT INTO citations (citing_paper, cited_paper) " +
-                        "VALUES " + (', '.join(values)))
-            db().commit()
+                values.append(
+                    '(%s, %s)' % (citing_id, paper_ids[cited_paper])
+                )
+
+            if len(values):
+                c.execute(
+                    "INSERT INTO citations (citing_paper, cited_paper) " +
+                    "VALUES " + (', '.join(values)))
+
+        db().commit()
     
     def run(self):
         self.__download_data()
