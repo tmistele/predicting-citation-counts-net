@@ -78,7 +78,7 @@ if __name__ == '__main__':
                                                   future=False)
         print('Based on data up to 2008-01-01, predict 2018-01-01', y_net_2018)
 
-        # Predict 2018 from data up to 2008
+        # Predict 2028 from data up to 2018
         # Two dummy authors specified by dummy data
         # by_papers: paper ids for each author, h0: h0 for each author
         # NOTE: These are *more* papers than until 2008
