@@ -756,7 +756,7 @@ class ScimeterNet(TimeSeriesNet):
                             steps_per_epoch=batches_per_epoch)
         model.save(self.get_net_filename())
 
-    def predict(self, x, xaux, y):
+    def predict_no_cumsum(self, x, xaux, y):
         # Speed up batch evaluations
         self.clear_keras_session()
 
@@ -767,10 +767,13 @@ class ScimeterNet(TimeSeriesNet):
         print("Predicting...")
         y_net = self.load_model().predict_generator(
             generator(), steps=batches_per_epoch)
+
+        # NOTE: Does not do np.cumsum(y_net, axis=1). This is already done in
+        # self.do_evaluate()
+
         return y_net
 
     def evaluate(self):
-
         filename = self.get_net_filename().replace('.h5',
                                                    '-validation-results.npz')
         try:
@@ -781,7 +784,7 @@ class ScimeterNet(TimeSeriesNet):
             # Load data
             print("Loading net evaluation data...")
             x, xaux, y = self.load_validation_data()
-            y_net = self.predict(x, xaux, y)
+            y_net = self.predict_no_cumsum(x, xaux, y)
             np.savez(filename, y_true=y, y_pred=y_net)
 
         self.metric_mapemin5 = True
@@ -798,7 +801,9 @@ class ScimeterNet(TimeSeriesNet):
         indices = np.arange(len(self.get_train_authors()))
         x, xaux, y = self.load_validation_data(indices=(indices,))
 
-        y_net = self.predict(x, xaux, y)
+        y_net = self.predict_no_cumsum(x, xaux, y)
+        if self.force_monotonic:
+            y_net = np.cumsum(y_net, axis=1)
 
         filename = self.get_net_filename().replace('.h5', '-future_all.npz')
         np.savez(filename, y_pred=y_net)
@@ -807,19 +812,26 @@ class ScimeterNet(TimeSeriesNet):
 
     def future_predict_by_papers(self):
 
+        # Must be set before selecting papers so we have the correct cutoff
+        # date
+        self._future = True
+
         # TODO: For now just check author_id = 401871
+        cutoff_date = mktime(self.get_cutoff_date().timetuple())
         c = self.con().cursor()
         c.execute("""
             SELECT p.id FROM papers AS p
             INNER JOIN author_papers AS pa
             ON p.id = pa.paper_id
-            WHERE pa.author_id = 401871""")
+            WHERE
+            pa.author_id = 401871 AND
+            p.timestamp < %(cutoff_date)s""", {
+                'cutoff_date': cutoff_date})
         tmp = []
         for (paper_id,) in c:
             tmp.append(paper_id)
         by_papers = [tmp]
 
-        self._future = True
 
         # Load model
         model = self.load_model()
@@ -843,7 +855,7 @@ class ScimeterNet(TimeSeriesNet):
             x[i, :len(papers), :] = paperx[papers].toarray()
         xaux = np.zeros((len(by_papers), 0))
 
-        # Predict and normalize
+        # Predict
         y_net = model.predict({'perpaper_inputs': x, 'perauthor_inputs': xaux})
         if self.force_monotonic:
             y_net = np.cumsum(y_net, axis=1)
