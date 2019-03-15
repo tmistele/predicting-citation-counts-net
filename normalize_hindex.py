@@ -840,7 +840,7 @@ class NormalizedHindexNet(Net):
     def _check_plot(self, indices0, indices1, label0, label1, suffix, h0,
                     normalized_hindex, y):
         data0 = np.log(normalized_hindex[indices0])
-        data1= np.log(normalized_hindex[indices1])
+        data1 = np.log(normalized_hindex[indices1])
 
         print("Plotting...")
         import matplotlib
@@ -894,6 +894,11 @@ class NormalizedHindexNet(Net):
         y = tmp['y_true']
         y_net = tmp['y_pred']
         normalized_hindex = tmp['normalized_hindex']
+
+        isinf = np.where(np.isinf(normalized_hindex))
+        print("These authors have inf normalized hindex", isinf)
+        print("Their h0", y[isinf])
+        print("Their prob params", y_net[isinf])
 
         # Load data for ages
         import cbor2
@@ -950,6 +955,8 @@ class NormalizedHindexNet(Net):
             indices0 = []
             indices1 = []
             for author in h0indices[0]:
+                if author in isinf[0]:
+                    continue
                 age_years  = max(
                     [(self.cutoff_date -
                       date.fromtimestamp(paper_dates[paper])).days/365
@@ -973,6 +980,8 @@ class NormalizedHindexNet(Net):
             indices0 = []
             indices1 = []
             for author in h0indices[0]:
+                if author in isinf[0]:
+                    continue
                 cats = np.array([categories[paper_categories[paper]]
                                 for paper in author_papers[author]])
                 match0 = 0
