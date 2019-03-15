@@ -684,6 +684,7 @@ class NormalizedHindexNet(Net):
         filename = self.get_net_filename().replace('.h5',
                                                    '-validation-results.png')
         plt.savefig(filename)
+        plt.close()
 
         # Histograms for individual h0s
         import scipy.stats as st
