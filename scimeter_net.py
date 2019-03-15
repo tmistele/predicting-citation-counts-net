@@ -792,9 +792,7 @@ class ScimeterNet(TimeSeriesNet):
         self.metric_mapemin5 = False
         return result
 
-    def future_predict_all(self):
-        self._future = True
-
+    def predict_all(self):
         # Load data
         print("Loading all data...")
         # Load all authors, not just validation authors
@@ -805,9 +803,13 @@ class ScimeterNet(TimeSeriesNet):
         if self.force_monotonic:
             y_net = np.cumsum(y_net, axis=1)
 
-        filename = self.get_net_filename().replace('.h5', '-future_all.npz')
+        filename = self.get_net_filename().replace(
+            '.h5', '%s_all.npz' % ('-future' if self._future else '-predict'))
         np.savez(filename, y_pred=y_net)
 
+    def future_predict_all(self):
+        self._future = True
+        self.predict_all()
         self._future = False
 
     def future_predict_by_papers(self):
@@ -873,7 +875,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('action', choices=['train', 'evaluate', 'future-all',
-                                           'future-by-papers'])
+                                           'future-by-papers', 'predict-all'])
 
     args = parser.parse_args()
     n = ScimeterNet()
@@ -885,5 +887,7 @@ if __name__ == '__main__':
         n.future_predict_all()
     elif args.action == 'future-by-papers':
         n.future_predict_by_papers()
+    elif args.action == 'predict-all':
+        n.predict_all()
     else:
         raise Exception("Invalid action")
