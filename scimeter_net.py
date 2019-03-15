@@ -805,7 +805,10 @@ class ScimeterNet(TimeSeriesNet):
 
         filename = self.get_net_filename().replace(
             '.h5', '%s_all.npz' % ('-future' if self._future else '-predict'))
-        np.savez(filename, y_pred=y_net)
+        if self._future:
+            np.savez(filename, y_pred=y_net)
+        else:
+            np.savez(filename, y_pred=y_net, y_true=y)
 
     def future_predict_all(self):
         self._future = True
