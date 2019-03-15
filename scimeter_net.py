@@ -374,7 +374,7 @@ class ScimeterNet(TimeSeriesNet):
 
             # months
             index = self.data_positions['months']
-            tmp[index] = (self.cutoff_date -
+            tmp[index] = (self.get_cutoff_date() -
                           date.fromtimestamp(paper_dates[paper_id])).days/30
 
             # length
