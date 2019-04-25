@@ -206,8 +206,16 @@ class ScimeterNet(TimeSeriesNet):
         author_ids = [author_id
                       for _, author_id in self.get_data_author_generator()]
 
+        # Range of years
+        if self._future:
+            # For future we only need the h-index at cutoff
+            years = range(0, 1)
+        else:
+            # We save the h-index at cutoff and 10 years in the future
+            years = range(0, self.predict_after_years+1)
+
         # Output data
-        y = np.zeros((len(author_ids), self.predict_after_years))
+        y = np.zeros((len(author_ids), len(years)))
 
         author_papers = self._load_author_papers()
 
@@ -217,8 +225,8 @@ class ScimeterNet(TimeSeriesNet):
         # Note taht we do not need to restrict cited_date, since this is
         # automatically done since citing_date > cited_date.
         sel = []
-        for year in range(1, self.predict_after_years+1):
-            cutoff = self.cutoff_date + relativedelta(years=year)
+        for year in years:
+            cutoff = self.get_cutoff_date() + relativedelta(years=year)
             sel.append("SUM(IF(citing_date < '%s', 1, 0))" %
                 cutoff.strftime("%Y-%m-%d"))
         sel = ',\n'.join(sel)
@@ -241,12 +249,11 @@ class ScimeterNet(TimeSeriesNet):
 
             nresults = cl.execute(sql)
             result = np.fromiter(cl, count=nresults,
-                dtype=[(str(i), 'i4')
-                       for i in range(1, self.predict_after_years+1)])
+                dtype=[(str(i), 'i4') for i in years])
 
             # Calculate h-index for each year
             last_hindex = None
-            for year in range(1, self.predict_after_years+1):
+            for year in years:
                 # Sort in descending order
                 result[::-1][str(year)].sort()
                 hindex = 0
@@ -255,14 +262,32 @@ class ScimeterNet(TimeSeriesNet):
                         break
                     hindex += 1
 
-                if year == 1 or not self.force_monotonic:
-                    y[i, year-1] = hindex
+                if year == 0 or not self.force_monotonic:
+                    y[i, year] = hindex
                 else:
-                    y[i, year-1] = hindex - last_hindex
+                    y[i, year] = hindex - last_hindex
                 last_hindex = hindex
 
-        columns = ['y' + str(i) for i in range(1, self.predict_after_years+1)]
+        columns = ['y' + str(i) for i in years]
         return pd.DataFrame(y, columns=columns)
+
+    def load_data_y(self, indices=None):
+        file_y = os.path.join(self.data_dir_xy,
+                              'net_data_y%s.h5' %
+                              ('-future' if self._future else ''))
+
+        if indices is not None:
+            indices = indices[0]
+
+        try:
+            y = pd.read_hdf(file_y, where=pd.IndexSlice[indices])
+        except FileNotFoundError:
+            y = self.generate_data_y()
+            y.to_hdf(file_y, key='y', format='table')
+            if indices is not None:
+                y = y.iloc[indices]
+
+        return y
 
     def _generate_paper_x(self):
 
@@ -693,9 +718,11 @@ class ScimeterNet(TimeSeriesNet):
                     # Reshape to (nauthors, npapers, nfeatures)
                     xbatch = xbatch.reshape((-1, npapers, nfeatures))
 
+                    # NOTE: y contains at 0 position the h-index at the cutoff
+                    # But the net only predicts differences for the future.
                     yield ({'perpaper_inputs': xbatch,
                             'perauthor_inputs': xaux[start:end]},
-                            y[start:end])
+                            y[start:end, 1:])
                     start += author_batch_size
                     end += author_batch_size
 
@@ -771,6 +798,11 @@ class ScimeterNet(TimeSeriesNet):
         # NOTE: Does not do np.cumsum(y_net, axis=1). This is already done in
         # self.do_evaluate()
 
+        # NOTE: Add h0 at cutoff to 0 prediction since we here only predict
+        # differences with the scimeter net, while the Net, TimeSeriesNet
+        # expect an abolute h-index for the first prediction!
+        y_net[:, 0] += y[:, 0]
+
         return y_net
 
     def evaluate(self):
@@ -787,8 +819,14 @@ class ScimeterNet(TimeSeriesNet):
             y_net = self.predict_no_cumsum(x, xaux, y)
             np.savez(filename, y_true=y, y_pred=y_net)
 
+        # NOTE: do_evaluate() expecteds y to start at cutoff+1 years. But here
+        # we start at cutoff. So add the h0 at cutoff to the diff at +1 years.
+        # Then we can use y[:, 1] for do_evaluate()
+        y[:, 1] += y[:, 0]
+        # TODO: Check explicitly
+
         self.metric_mapemin5 = True
-        result = self.do_evaluate(y, y_net)
+        result = self.do_evaluate(y[:, 1:], y_net)
         self.metric_mapemin5 = False
         return result
 
