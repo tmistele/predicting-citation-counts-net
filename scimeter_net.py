@@ -875,7 +875,6 @@ class ScimeterNet(TimeSeriesNet):
             tmp.append(paper_id)
         by_papers = [tmp]
 
-
         # Load model
         model = self.load_model()
         input_shape = model.get_layer(index=0).input_shape
@@ -884,6 +883,19 @@ class ScimeterNet(TimeSeriesNet):
 
         # Generate input x, xaux
         paperx = self.load_data_paperx()
+
+        # Calculate h-index at cutoff
+        hindex_at_cutoff = np.zeros(len(by_papers))
+        for i, papers in enumerate(by_papers):
+            ncits = paperx[papers, self.data_positions['num_citations']].toarray().flatten()
+            ncits[::-1].sort()
+
+            tmp = 0
+            for ncit in ncits:
+                if ncit <= tmp:
+                    break
+                tmp += 1
+            hindex_at_cutoff[i] = tmp
 
         # Scale x
         self._scale_inputs(paperx, xaux=None, is_train_inputs=False)
@@ -900,6 +912,8 @@ class ScimeterNet(TimeSeriesNet):
 
         # Predict
         y_net = model.predict({'perpaper_inputs': x, 'perauthor_inputs': xaux})
+        # Add hindex at cutoff since the network only predicts differences
+        y_net[:, 0] += hindex_at_cutoff
         if self.force_monotonic:
             y_net = np.cumsum(y_net, axis=1)
 
