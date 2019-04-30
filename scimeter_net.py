@@ -823,7 +823,6 @@ class ScimeterNet(TimeSeriesNet):
         # we start at cutoff. So add the h0 at cutoff to the diff at +1 years.
         # Then we can use y[:, 1] for do_evaluate()
         y[:, 1] += y[:, 0]
-        # TODO: Check explicitly
 
         self.metric_mapemin5 = True
         result = self.do_evaluate(y[:, 1:], y_net)
