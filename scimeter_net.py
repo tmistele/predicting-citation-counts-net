@@ -197,7 +197,6 @@ class ScimeterNet(TimeSeriesNet):
 
         db().commit()
 
-        raise Exception("okay")
 
     def generate_data_y(self):
 
