@@ -75,16 +75,29 @@ class ProbGamma(Prob):
     def name(self):
         return 'gamma'
 
+    def _gamma_cum_1_minus(self, x, alpha, beta):
+        # igammac(a, x) = 1/Gamma(a) * int_x^inf (t^(a-1) exp(-t))
+        igammac = K.tensorflow_backend.tf.math.igammac
+        # https://en.wikipedia.org/wiki/Gamma_distribution
+        return igammac(alpha, beta*x)
+
+    def normalized_hindex(self, h0, alpha, beta):
+        # 1/P(h>=h0)
+        # Optimized version!
+        # Do not use 1/(1-self._gamma_cum(h0+1, alpha, beta) since this is
+        # numerically bad for _gamma_cum() close to 1 (e.g. ATLAS)
+        return 1/self._gamma_cum_1_minus(h0, alpha, beta)
+
+    def cum(self, h0, alpha, beta):
+        # Don't need to subtract since self._gamma_cum(0, alpha, beta) == 0
+        return self._gamma_cum(h0+1, alpha, beta)
+
     def _gamma_cum(self, x, alpha, beta):
         # https://www.tensorflow.org/api_docs/python/tf/math/igamma
         # igamma(a, x) = 1/Gamma(a) * int_0^x (t^(a-1) exp(-t))
         igamma = K.tensorflow_backend.tf.math.igamma
         # https://en.wikipedia.org/wiki/Gamma_distribution
         return igamma(alpha, beta*x)
-
-    def cum(self, h0, alpha, beta):
-        return self._gamma_cum(h0+1, alpha, beta) -\
-            self._gamma_cum( 0., alpha, beta)
 
     def prob(self, h0, alpha, beta):
         # Gamma probability mass function
