@@ -88,6 +88,15 @@ class ProbGamma(Prob):
         # numerically bad for _gamma_cum() close to 1 (e.g. ATLAS)
         return 1/self._gamma_cum_1_minus(h0, alpha, beta)
 
+    def prob(self, h0, alpha, beta):
+        # Gamma probability mass function
+        # Don't use self._gamma_cum for better numerical behavior!
+        # NOTE: We add .001 to h0, since keras/tf cannot handle our prob_gamma
+        # for h0 -> 0 very well. If we don't do this, we tend to always get
+        # loss=nan Gamma probability mass function
+        return self._gamma_cum_1_minus(h0+.001, alpha, beta) -\
+            self._gamma_cum_1_minus(h0+1+.001, alpha, beta)
+
     def cum(self, h0, alpha, beta):
         # Don't need to subtract since self._gamma_cum(0, alpha, beta) == 0
         return self._gamma_cum(h0+1, alpha, beta)
@@ -98,12 +107,3 @@ class ProbGamma(Prob):
         igamma = K.tensorflow_backend.tf.math.igamma
         # https://en.wikipedia.org/wiki/Gamma_distribution
         return igamma(alpha, beta*x)
-
-    def prob(self, h0, alpha, beta):
-        # Gamma probability mass function
-        # NOTE: We add .001 to h0, since keras/tf cannot handle our prob_gamma
-        # for h0 -> 0 very well. If we don't do this, we tend to always get
-        # loss=nan Gamma probability mass function
-        return self._gamma_cum(h0+1+.001, alpha, beta) -\
-            self._gamma_cum(h0+.001, alpha, beta)
-
