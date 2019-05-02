@@ -19,7 +19,7 @@ class ScimeterNet(TimeSeriesNet):
         'padding': 0,
         'num_citations': 1,
         'months': 2,
-        'length': 3,
+        'word_count': 3,
         'published': 4,
         'jif': 5,
         'num_authors': 6,
@@ -30,6 +30,8 @@ class ScimeterNet(TimeSeriesNet):
 
     paper_topics_dim = 0
     numcategories = 38
+
+    BACKEND_PAPER_METRIC_WORD_COUNT = 5
 
     def __init__(self):
         self._con = None
@@ -327,21 +329,26 @@ class ScimeterNet(TimeSeriesNet):
         for paper_id, num_citations in cl:
             paper_citations[paper_id] = num_citations
 
-        # Load jifs, lengths
-        print("Loading jifs, length...")
+        # Load jifs
+        print("Loading jifs...")
         paper_jifs = np.zeros(ntotalpapers)
-        paper_lengths = np.zeros(ntotalpapers)
         c = self.con().cursor()
         c.execute("""
-            SELECT id, jif, length
+            SELECT id, jif
             FROM papers""")
-        for paper_id, jif, length in c:
+        for paper_id, jif in c:
             paper_jifs[paper_id] = jif if jif is not None else 0
-            paper_lengths[paper_id] = length
 
-        # Median length for papers with 0 length = no length available
-        paper_lengths[np.isnan(paper_lengths)] =\
-            np.median(paper_lengths[~np.isnan(paper_lengths)])
+        # Load paper word counts
+        print("Loading paper word counts...")
+        paper_word_counts = np.load(
+            os.path.join(settings.DATA_DIR, 'arxiv', 'keywords-backend',
+                        'nn_data', 'paper_metrics.npy')
+            )[:, self.BACKEND_PAPER_METRIC_WORD_COUNT]
+
+        # Median word count for papers with no word count available
+        paper_word_counts[np.isnan(paper_word_counts)] =\
+            np.median(paper_word_counts[~np.isnan(paper_word_counts)])
 
         # For #coauthors
         print("Loading paper authors...")
@@ -402,9 +409,9 @@ class ScimeterNet(TimeSeriesNet):
             tmp[index] = (self.get_cutoff_date() -
                           date.fromtimestamp(paper_dates[paper_id])).days/30
 
-            # length
-            index = self.data_positions['length']
-            tmp[index] = paper_lengths[paper_id]
+            # word count
+            index = self.data_positions['word_count']
+            tmp[index] = paper_word_counts[paper_id]
 
             # num_citations
             index = self.data_positions['num_citations']
