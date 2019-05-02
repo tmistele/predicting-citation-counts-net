@@ -95,12 +95,12 @@ class NormalizedHindexNet(Net):
 
         c = self.con().cursor()
 
-        print("Fetching h-indices from elementary_author_metrics...")
+        print("Fetching h-indices from author_metric_values...")
         # h-index has index -1
         c.execute("""
             SELECT value, author_id
-            FROM elementary_author_metrics
-            WHERE index = -1
+            FROM author_metric_values
+            WHERE metric_id = -1
             ORDER BY author_id ASC""")
         tmp = {}
         for (value, author_id) in c:
